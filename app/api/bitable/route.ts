@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { bitableService } from '@/services/feishu-bitable';
 import { withCache, cacheKey, cacheDelByPrefix, DEFAULT_TTL, RECORD_TTL } from '@/lib/cache';
 
@@ -7,7 +7,7 @@ const TOKEN_COOKIE = 'feishu_token';
 const EXPIRE_COOKIE = 'feishu_token_expire';
 
 /** 从 request cookies 中读取 token 信息 */
-function getTokenFromCookies(request: Request): { accessToken: string | null; expire: number } {
+function getTokenFromCookies(request: NextRequest): { accessToken: string | null; expire: number } {
   const token = request.cookies.get(TOKEN_COOKIE)?.value || null;
   const expireStr = request.cookies.get(EXPIRE_COOKIE)?.value || '0';
   const expire = parseInt(expireStr) || 0;
@@ -25,7 +25,7 @@ function clearAuthCookies(response: NextResponse): void {
  * 所有前端请求通过此路由转发到飞书开放平台
  * Token 通过 HttpOnly Cookie 传递，前端 JS 不可访问（防 XSS）
  */
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   let action = '';
   let appToken = '';
   let tableId = '';

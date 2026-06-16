@@ -27,7 +27,7 @@ function clearAuthCookies(response: NextResponse): void {
  * Token 通过 HttpOnly Cookie 传递，前端 JS 不可访问（防 XSS）
  */
 export async function POST(request: NextRequest) {
-  // 惰性迁移：首次调用时自动建表（兼容 Vercel serverless 无 instrumentationHook）
+  // 惰性迁移：首次调用时自动建表（失败不阻塞业务）
   await ensureMigrations();
 
   let action = '';

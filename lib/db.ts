@@ -45,8 +45,13 @@ const LATEST_VERSION = 3;
 let migrationsDone = false;
 export async function ensureMigrations(): Promise<void> {
   if (migrationsDone) return;
-  await runMigrations();
-  migrationsDone = true;
+  try {
+    await runMigrations();
+    migrationsDone = true;
+  } catch (err: any) {
+    console.warn('[db] 数据库迁移失败（DB 未配置或连接异常）:', err?.message || String(err));
+    // 不阻塞业务——迁移失败不影响 API 代理等核心功能
+  }
 }
 
 export async function runMigrations(): Promise<void> {

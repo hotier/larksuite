@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { bitableService } from '@/services/feishu-bitable';
-import { withCache, cacheKey, cacheDelByPrefix, DEFAULT_TTL, RECORD_TTL } from '@/lib/cache';
+import { withCache, cacheKey, cacheDel, cacheDelByPrefix, DEFAULT_TTL, RECORD_TTL } from '@/lib/cache';
 
 /** Cookie 名称常量 */
 const TOKEN_COOKIE = 'feishu_token';

@@ -39,7 +39,7 @@ export async function healthCheck(): Promise<boolean> {
  * 每个迁移版本是一个独立步骤，通过 schema_migrations 表追踪已执行的版本。
  * 新增迁移只需在高位追加步骤 + 更新 LATEST_VERSION。
  */
-const LATEST_VERSION = 3;
+const LATEST_VERSION = 4;
 
 /** 惰性迁移 — 确保只执行一次（Vercel serverless 每次冷启动重置） */
 let migrationsDone = false;
@@ -158,5 +158,19 @@ export async function runMigrations(): Promise<void> {
       VALUES (3, ${new Date().toISOString()})
     `;
     console.log('[db] V3 迁移完成（user_tokens + preview_tokens 表）');
+  }
+
+  // ── V4: preview_tokens 清理性能索引 ──
+  if (currentVersion < 4) {
+    await s`
+      CREATE INDEX IF NOT EXISTS idx_preview_tokens_created_at
+      ON preview_tokens (created_at)
+    `;
+
+    await s`
+      INSERT INTO schema_migrations (version, applied_at)
+      VALUES (4, ${new Date().toISOString()})
+    `;
+    console.log('[db] V4 迁移完成（preview_tokens created_at 索引）');
   }
 }

@@ -139,7 +139,7 @@ export default function RootPage() {
           </div>
           <div className="absolute -inset-2 rounded-2xl border-2 border-amber-200 border-dashed animate-spin-slower" />
         </div>
-        <span className="text-xs font-medium text-neutral-400 tracking-widest uppercase">Flybook Workspace</span>
+        <span className="text-xs font-medium text-neutral-400 tracking-widest uppercase">Lark Workspace</span>
       </div>
     );
   }
@@ -331,7 +331,7 @@ export default function RootPage() {
 
       {/* ═══════════ Footer ═══════════ */}
       <footer className="relative py-5 text-center">
-        <span className="text-xs text-neutral-300 tracking-widest uppercase">lark workspace</span>
+        <span className="text-xs text-neutral-300 tracking-widest uppercase">Lark Workspace · Lark Sdk</span>
       </footer>
     </div>
   );

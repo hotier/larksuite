@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { bitableService } from '@/services/feishu-bitable';
 import { withCache, cacheKey, cacheDel, cacheDelByPrefix, DEFAULT_TTL, RECORD_TTL } from '@/lib/cache';
+import { ensureMigrations } from '@/lib/db';
 
 /** Cookie 名称常量 */
 const TOKEN_COOKIE = 'feishu_token';
@@ -26,6 +27,9 @@ function clearAuthCookies(response: NextResponse): void {
  * Token 通过 HttpOnly Cookie 传递，前端 JS 不可访问（防 XSS）
  */
 export async function POST(request: NextRequest) {
+  // 惰性迁移：首次调用时自动建表（兼容 Vercel serverless 无 instrumentationHook）
+  await ensureMigrations();
+
   let action = '';
   let appToken = '';
   let tableId = '';

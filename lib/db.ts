@@ -41,6 +41,14 @@ export async function healthCheck(): Promise<boolean> {
  */
 const LATEST_VERSION = 3;
 
+/** 惰性迁移 — 确保只执行一次（Vercel serverless 每次冷启动重置） */
+let migrationsDone = false;
+export async function ensureMigrations(): Promise<void> {
+  if (migrationsDone) return;
+  await runMigrations();
+  migrationsDone = true;
+}
+
 export async function runMigrations(): Promise<void> {
   const s = sql();
 

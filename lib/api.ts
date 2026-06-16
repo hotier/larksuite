@@ -152,20 +152,57 @@ export async function deleteFile(fileToken: string, fileType: string): Promise<v
 
 // ====== 数据表 (Tables) ======
 
+/** 前端 tables 缓存（key = appToken，页面切换不丢失） */
+const TABLES_CACHE_TTL = 10 * 60 * 1000; // 10 分钟
+const tablesCache = new Map<string, { data: ListTablesData; ts: number }>();
+
+/** 前端 fields 缓存（key = appToken:tableId） */
+const FIELDS_CACHE_TTL = 10 * 60 * 1000;
+const fieldsCache = new Map<string, { data: Field[]; ts: number }>();
+
+/** 清除指定 appToken 相关的 tables + fields 缓存 */
+export function invalidateTableCache(appToken: string, tableId?: string) {
+  tablesCache.delete(appToken);
+  if (tableId) {
+    fieldsCache.delete(`${appToken}:${tableId}`);
+  } else {
+    // 模糊删除该 app 下所有 fields 缓存
+    for (const key of fieldsCache.keys()) {
+      if (key.startsWith(`${appToken}:`)) fieldsCache.delete(key);
+    }
+  }
+}
+
 export async function listTables(appToken: string, pageSize = 100, pageToken = ''): Promise<ListTablesData> {
-  return request<ListTablesData>({ action: 'listTables', appToken, pageSize, pageToken });
+  const cached = tablesCache.get(appToken);
+  if (cached && Date.now() - cached.ts < TABLES_CACHE_TTL) {
+    return cached.data;
+  }
+  const data = await request<ListTablesData>({ action: 'listTables', appToken, pageSize, pageToken });
+  tablesCache.set(appToken, { data, ts: Date.now() });
+  return data;
 }
 
 export async function createTable(appToken: string, tableName: string, fields: { name: string; type: FieldType }[]): Promise<Table> {
-  return request<Table>({ action: 'createTable', appToken, tableName, fields });
+  const result = await request<Table>({ action: 'createTable', appToken, tableName, fields });
+  invalidateTableCache(appToken);
+  return result;
 }
 
 export async function deleteTable(appToken: string, tableId: string): Promise<void> {
-  return request<void>({ action: 'deleteTable', appToken, tableId });
+  await request<void>({ action: 'deleteTable', appToken, tableId });
+  invalidateTableCache(appToken, tableId);
 }
 
 export async function listFields(appToken: string, tableId: string, pageSize = 100, pageToken = ''): Promise<Field[]> {
-  return request<Field[]>({ action: 'listFields', appToken, tableId, pageSize, pageToken });
+  const key = `${appToken}:${tableId}`;
+  const cached = fieldsCache.get(key);
+  if (cached && Date.now() - cached.ts < FIELDS_CACHE_TTL) {
+    return cached.data;
+  }
+  const data = await request<Field[]>({ action: 'listFields', appToken, tableId, pageSize, pageToken });
+  fieldsCache.set(key, { data, ts: Date.now() });
+  return data;
 }
 
 // ====== 记录 (Records) ======

@@ -10,9 +10,24 @@
  */
 
 // ── 可配置参数 ──
-const DEFAULT_TTL = Number(process.env.CACHE_TTL_MS) || 30_000; // 默认 30 秒
-const RECORD_TTL  = Math.max(10_000, Math.floor(DEFAULT_TTL / 2));
-const MAX_ENTRIES = 1000;
+const DEFAULT_TTL = Number(process.env.CACHE_TTL_MS) || 300_000; // 默认 5 分钟
+const RECORD_TTL  = Math.max(60_000, Math.floor(DEFAULT_TTL / 2)); // 记录缓存 2.5 分钟
+
+/** 分层 TTL：不同数据类型用不同策略 */
+export const TTL = {
+  /** 应用/文档列表 — 极少变化，10 分钟 */
+  APPS:  10 * 60_000,
+  /** 数据表列表 — 较少变化，5 分钟 */
+  TABLES: 5 * 60_000,
+  /** 字段列表 — 极少变化，10 分钟 */
+  FIELDS: 10 * 60_000,
+  /** 记录列表 — 变化较多，2 分钟 */
+  RECORDS: 2 * 60_000,
+  /** 单条记录 — 1 分钟 */
+  RECORD: 60_000,
+} as const;
+
+const MAX_ENTRIES = 2000;
 
 interface CacheEntry<T> {
   data: T;

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { bitableService } from '@/services/feishu-bitable';
-import { withCache, cacheKey, cacheDel, cacheDelByPrefix, DEFAULT_TTL, RECORD_TTL } from '@/lib/cache';
+import { withCache, cacheKey, cacheDel, cacheDelByPrefix, TTL } from '@/lib/cache';
 import { ensureMigrations } from '@/lib/db';
 
 /** Cookie 名称常量 */
@@ -108,6 +108,7 @@ export async function POST(request: NextRequest) {
         result = await withCache(
           cacheKey('apps', pageToken || '0', folderToken || ''),
           () => bitableService.listApps(pageSize, pageToken, folderToken, uaToken),
+          TTL.APPS,
         );
         break;
 
@@ -122,6 +123,7 @@ export async function POST(request: NextRequest) {
         result = await withCache(
           cacheKey('docs', pageToken || '0', folderToken || ''),
           () => bitableService.listDocs(pageSize, pageToken, folderToken, uaToken),
+          TTL.APPS,
         );
         break;
 
@@ -136,6 +138,7 @@ export async function POST(request: NextRequest) {
         result = await withCache(
           cacheKey('sheets', pageToken || '0', folderToken || ''),
           () => bitableService.listSheets(pageSize, pageToken, folderToken, uaToken),
+          TTL.APPS,
         );
         break;
 
@@ -163,6 +166,7 @@ export async function POST(request: NextRequest) {
         result = await withCache(
           cacheKey('tables', appToken, pageToken || '0'),
           () => bitableService.listTables(appToken, pageSize, pageToken, uaToken),
+          TTL.TABLES,
         );
         break;
 
@@ -185,6 +189,7 @@ export async function POST(request: NextRequest) {
         result = await withCache(
           cacheKey('fields', appToken, tableId),
           () => bitableService.listFields(appToken, tableId, pageSize, pageToken, uaToken),
+          TTL.FIELDS,
         );
         break;
 
@@ -194,7 +199,7 @@ export async function POST(request: NextRequest) {
         result = await withCache(
           cacheKey('records', appToken, tableId, pageToken || '0'),
           () => bitableService.listRecords(appToken, tableId, pageSize, pageToken, uaToken),
-          RECORD_TTL,
+          TTL.RECORDS,
         );
         break;
 
@@ -203,7 +208,7 @@ export async function POST(request: NextRequest) {
         result = await withCache(
           cacheKey('record', appToken, tableId, recordId),
           () => bitableService.readRecord(appToken, tableId, recordId, uaToken),
-          RECORD_TTL,
+          TTL.RECORD,
         );
         break;
 

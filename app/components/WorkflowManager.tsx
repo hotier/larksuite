@@ -109,7 +109,7 @@ const NODE_STYLE: Record<string, { bg: string; border: string; text: string; ico
 };
 
 // ====== 辅助 ======
-const idGen = () => `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+const idGen = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 function generateWebhookId(): string {
   // 生成 32 位 hex 字符串，与飞书 webhook 格式一致：a70af54e80adc8e62a9f4921b38e8b91

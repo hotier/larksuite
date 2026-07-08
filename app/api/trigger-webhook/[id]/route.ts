@@ -51,6 +51,62 @@ function safeStringify(obj: unknown, max = 120): string {
   }
 }
 
+/**
+ * 手动解析 multipart/form-data，作为 request.formData() 的兜底。
+ * 兼容 iOS 等非常规格式：缺结尾 '--'、换行符为 \n 而非 \r\n 等。
+ * 返回 [字段名, 值]，值类型为 string（文本）或 {__file,mime,data}（文件）。
+ */
+type ManualPart = string | { __file: true; mime: string; data: Buffer };
+function parseMultipartManual(buf: Buffer, ct: string): [string, ManualPart][] {
+  const bm = /boundary=("?)([^";]+)\1/i.exec(ct);
+  if (!bm) return [];
+  const boundary = bm[2];
+  const delim = Buffer.from(`--${boundary}`);
+  const parts: Buffer[] = [];
+  let start = buf.indexOf(delim);
+  if (start === -1) return [];
+  start += delim.length;
+  while (start < buf.length) {
+    if (buf[start] === 0x0d) start++;
+    if (buf[start] === 0x0a) start++;
+    let end = buf.indexOf(delim, start);
+    if (end === -1) end = buf.length;
+    // 结尾边界（--boundary--）则停止
+    if (buf[start] === 0x2d && buf[start + 1] === 0x2d) break;
+    const part = buf.slice(start, end);
+    let pEnd = part.length;
+    if (part[pEnd - 1] === 0x0a) pEnd--;
+    if (part[pEnd - 1] === 0x0d) pEnd--;
+    if (pEnd > 0) parts.push(part.slice(0, pEnd));
+    start = end + delim.length;
+  }
+  const result: [string, ManualPart][] = [];
+  for (const part of parts) {
+    const sep1 = part.indexOf('\r\n\r\n');
+    let headerEnd: number;
+    let bodyStart: number;
+    if (sep1 !== -1) { headerEnd = sep1; bodyStart = sep1 + 4; }
+    else {
+      const sep2 = part.indexOf('\n\n');
+      if (sep2 === -1) continue;
+      headerEnd = sep2; bodyStart = sep2 + 2;
+    }
+    const headerStr = part.slice(0, headerEnd).toString('latin1');
+    const body = part.slice(bodyStart);
+    const nameM = /name="([^"]*)"/i.exec(headerStr);
+    const fileM = /filename="([^"]*)"/i.exec(headerStr);
+    const typeM = /content-type:\s*([^\r\n]+)/i.exec(headerStr);
+    const name = nameM ? nameM[1] : '';
+    if (fileM) {
+      const mime = typeM ? typeM[1].trim() : 'application/octet-stream';
+      result.push([name, { __file: true, mime, data: body }]);
+    } else {
+      result.push([name, body.toString('utf8')]);
+    }
+  }
+  return result;
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -118,17 +174,36 @@ export async function POST(
         // 用原始字节重建请求再解析（原 request 的 body 已被消费）
         const rebuilt = new Request(request.url, { method: 'POST', headers: request.headers, body: rawBuf });
         // 表单 / 文件上传（如 iOS 快捷指令传图片）：文件转 base64 data URL 注入 content
-        const form = await rebuilt.formData();
+        let formEntries: [string, unknown][] = [];
+        try {
+          const form = await rebuilt.formData();
+          for (const [k, v] of form.entries()) formEntries.push([k, v]);
+        } catch (e) {
+          console.warn('[diag] request.formData() 抛错，将改用手动解析:', e);
+        }
+        // 兜底：标准解析为空但 body 有内容时，手动按 boundary 拆分（兼容 iOS 非标准 multipart）
+        if (formEntries.length === 0 && rawBuf.length > 0) {
+          console.log('[diag] formData() 解析为空，改用手动 multipart 解析');
+          formEntries = parseMultipartManual(rawBuf, diagCt || contentType) as [string, unknown][];
+        }
         const textFields: Record<string, unknown> = {};
         const fileFields: Record<string, unknown> = {};
         const unnamedFiles: string[] = []; // iOS 可能以空字段名发送文件，作为兜底
-        for (const [k, v] of form.entries()) {
+        for (const [k, v] of formEntries) {
           if (typeof v === 'string') {
             if (k) textFields[k] = v;
             console.log(`[webhook] 收到文本字段「${k || '(空)'}」: ${(v as string).slice(0, 40)}`);
           } else {
-            const buf = Buffer.from(await v.arrayBuffer());
-            const mime = v.type || 'application/octet-stream';
+            let buf: Buffer;
+            let mime: string;
+            if (v && (v as any).__file) {
+              buf = (v as any).data as Buffer;
+              mime = (v as any).mime as string;
+            } else {
+              const f = v as unknown as { arrayBuffer: () => Promise<ArrayBuffer>; type?: string };
+              buf = Buffer.from(await f.arrayBuffer());
+              mime = f.type || 'application/octet-stream';
+            }
             const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
             console.log(`[webhook] 收到文件字段「${k || '(空)'}」: mime=${mime}, ${(buf.length / 1024).toFixed(1)}KB`);
             if (k) fileFields[k] = dataUrl;

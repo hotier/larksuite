@@ -153,24 +153,10 @@ export async function POST(
     let rawBody: Record<string, unknown> = {};
     let webhookContent: Record<string, unknown> = {};
     const contentType = request.headers.get('content-type') || '';
-    // 诊断变量（仅 multipart 时填充，回传到 _debug 便于跨环境排查）
-    let diagSize: number | undefined;
-    let diagCt: string | undefined;
-    let diagCl: string | undefined;
-    let diagTe: string | undefined;
-    let diagRawHead: string | undefined;
     try {
       if (contentType.includes('multipart/form-data')) {
-        // === 诊断：抓取 iOS 原始请求体，看清它到底发了什么 ===
+        // 读取原始字节（request.body 只能消费一次，后面需重建请求或手动解析）
         const rawBuf = Buffer.from(await request.arrayBuffer());
-        diagSize = rawBuf.length;
-        diagCt = request.headers.get('content-type') || '';
-        diagCl = request.headers.get('content-length') || '(无)';
-        diagTe = request.headers.get('transfer-encoding') || '(无)';
-        diagRawHead = rawBuf.slice(0, 800).toString('latin1');
-        console.log(`[diag] multipart 原始大小=${rawBuf.length} 字节, content-type=${diagCt}, content-length=${diagCl}, transfer-encoding=${diagTe}`);
-        console.log(`[diag] 原始头 800 字节=\n${diagRawHead}`);
-        try { require('fs').writeFileSync('last_ios_body.bin', rawBuf); console.log('[diag] 已写出 last_ios_body.bin'); } catch {}
         // 用原始字节重建请求再解析（原 request 的 body 已被消费）
         const rebuilt = new Request(request.url, { method: 'POST', headers: request.headers, body: rawBuf });
         // 表单 / 文件上传（如 iOS 快捷指令传图片）：文件转 base64 data URL 注入 content
@@ -179,12 +165,12 @@ export async function POST(
           const form = await rebuilt.formData();
           for (const [k, v] of form.entries()) formEntries.push([k, v]);
         } catch (e) {
-          console.warn('[diag] request.formData() 抛错，将改用手动解析:', e);
+          console.warn('[webhook] request.formData() 抛错，将改用手动解析:', e);
         }
         // 兜底：标准解析为空但 body 有内容时，手动按 boundary 拆分（兼容 iOS 非标准 multipart）
         if (formEntries.length === 0 && rawBuf.length > 0) {
-          console.log('[diag] formData() 解析为空，改用手动 multipart 解析');
-          formEntries = parseMultipartManual(rawBuf, diagCt || contentType) as [string, unknown][];
+          console.log('[webhook] formData() 解析为空，改用手动 multipart 解析');
+          formEntries = parseMultipartManual(rawBuf, contentType) as [string, unknown][];
         }
         const textFields: Record<string, unknown> = {};
         const fileFields: Record<string, unknown> = {};
@@ -265,25 +251,7 @@ export async function POST(
     // 5. 使用 DAG 执行引擎按拓扑序执行节点
     const result = await executeWorkflow(workflow, webhookContent, secretToken);
     console.log(`[webhook] 执行结果:`, result.data?.results);
-    const receivedKeys = Object.keys(webhookContent);
-    return NextResponse.json({
-      ...result,
-      _debug: {
-        contentType,
-        receivedKeys,
-        imageValueType: typeof webhookContent['image'],
-        testValueType: typeof webhookContent['test'],
-        diagSize,
-        diagHeaders: { 'content-type': diagCt, 'content-length': diagCl, 'transfer-encoding': diagTe },
-        diagRawHead,
-        hint:
-          receivedKeys.length === 0
-            ? (contentType.includes('multipart')
-                ? '已收到 multipart 表单但无字段。请检查 iOS「获取 URL 内容」的表单：每个字段的「字段名称」需填写(如 image/test)，且字段「值」必须真正连接照片变量/文本——iOS 会跳过值为空的字段不发送。'
-                : '未收到任何字段。请确认 iOS「获取 URL 内容」的请求体设为「表单」(Form) 而非 JSON，并添加字段名称=image 的文件字段。JSON 模式无法直接发送二进制图片。')
-            : undefined,
-      },
-    });
+    return NextResponse.json(result);
   } catch (error: any) {
     console.error('[webhook] 内部错误:', error);
     return NextResponse.json(

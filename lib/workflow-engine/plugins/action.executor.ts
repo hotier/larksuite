@@ -55,11 +55,29 @@ async function resolveFieldValues(
               const approxKb = (b64len * 3 / 4 / 1024).toFixed(1);
               console.log(`[webhook] 附件字段「${m.fieldName}」: base64 图片, mime=${mime}, 约 ${approxKb}KB`);
               const bitableService = await getBitableService();
-              const ext = (raw.match(/data:([^;/]+)/)?.[1] || 'bin').split('/')[1] || 'bin';
+              // 统一转换为 webp：扩展名统一、体积更小、飞书预览更稳
+              let uploadDataUrl = raw;
+              let ext = 'webp';
+              if (mime.startsWith('image/') && mime !== 'image/webp') {
+                try {
+                  const { default: sharp } = await import('sharp');
+                  const base64 = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw;
+                  const webpBuf = await sharp(Buffer.from(base64, 'base64')).webp().toBuffer();
+                  uploadDataUrl = `data:image/webp;base64,${webpBuf.toString('base64')}`;
+                  console.log(`[webhook] 附件字段「${m.fieldName}」: 已转 webp, ${(webpBuf.length / 1024).toFixed(1)}KB (原 ${approxKb}KB)`);
+                } catch (e) {
+                  console.warn(`[webhook] 附件字段「${m.fieldName}」: webp 转换失败，回退原格式(${mime})`, e);
+                  ext = mime.includes('/') ? mime.split('/')[1] : 'bin';
+                  uploadDataUrl = raw;
+                }
+              } else if (!mime.startsWith('image/')) {
+                // 非图片（如 pdf）保持原扩展名
+                ext = mime.includes('/') ? mime.split('/')[1] : 'bin';
+              }
               const fileToken = await bitableService.uploadFileToBitable({
                 fileName: `${m.fieldName || 'file'}.${ext}`,
                 appToken,
-                dataUrl: raw,
+                dataUrl: uploadDataUrl,
               });
               fields[m.fieldName] = [{ file_token: fileToken }];
               console.log(`[webhook] 附件字段「${m.fieldName}」: 上传成功, file_token=${fileToken}`);

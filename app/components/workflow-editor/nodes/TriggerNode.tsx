@@ -38,13 +38,13 @@ function describeSchedule(cron?: string): string {
   if (parts.length !== 5) return '未设置定时';
   const [min, hour, dom, , dow] = parts;
   const time = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
-  if (cron.trim() === '* * * * *') return '每分钟';
+  if ((cron ?? '').trim() === '* * * * *') return '每分钟';
   if (min !== '*' && hour === '*') return `每小时第 ${min} 分`;
   if (dom === '*' && dow === '*') return `每天 ${time}`;
   const wd = WEEKDAY_LABELS[((parseInt(dow, 10) % 7) + 7) % 7];
   if (dom === '*' && dow !== '*') return `每${wd} ${time}`;
   if (dom !== '*' && dow === '*') return `每月 ${dom} 号 ${time}`;
-  return cron;
+  return cron ?? '未设置定时';
 }
 
 export default function TriggerNode({ data, selected }: NodeProps) {

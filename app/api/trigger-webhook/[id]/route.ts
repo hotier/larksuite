@@ -163,7 +163,15 @@ export async function POST(
     // 5. 使用 DAG 执行引擎按拓扑序执行节点
     const result = await executeWorkflow(workflow, webhookContent, secretToken);
     console.log(`[webhook] 执行结果:`, result.data?.results);
-    return NextResponse.json(result);
+    return NextResponse.json({
+      ...result,
+      _debug: {
+        contentType,
+        receivedKeys: Object.keys(webhookContent),
+        imageValueType: typeof webhookContent['image'],
+        testValueType: typeof webhookContent['test'],
+      },
+    });
   } catch (error: any) {
     console.error('[webhook] 内部错误:', error);
     return NextResponse.json(

@@ -10,7 +10,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Zap, GitBranch, Shuffle, Play, Bell, Building2,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, Search, X,
 } from 'lucide-react';
 import { nodeRegistry } from '@/lib/workflow-engine/node-registry';
 import { NODE_CATEGORIES } from '@/types';
@@ -29,8 +29,25 @@ const CATEGORY_ICONS: Record<string, typeof Zap> = {
   lark_ecosystem: Building2,
 };
 
+/** 匹配节点：名称 / 描述 / 动作类型 */
+function matchNode(item: {
+  displayName: string;
+  description: string;
+  actionType?: string;
+}, q: string): boolean {
+  const query = q.trim().toLowerCase();
+  if (!query) return true;
+  return (
+    item.displayName.toLowerCase().includes(query) ||
+    item.description.toLowerCase().includes(query) ||
+    (item.actionType?.toLowerCase().includes(query) ?? false)
+  );
+}
+
 export default function NodePanel({ className = '' }: NodePanelProps) {
   const grouped = useMemo(() => nodeRegistry.getAddableItemsByCategory(), []);
+  const [search, setSearch] = useState('');
+  const isSearching = search.trim().length > 0;
 
   // 按 order 排序的分类列表
   const sortedCategories = useMemo(() => {
@@ -41,7 +58,17 @@ export default function NodePanel({ className = '' }: NodePanelProps) {
     });
   }, [grouped]);
 
-  // 默认全部展开
+  // 搜索结果（按分类过滤后的节点）
+  const filtered = useMemo(() => {
+    const result = new Map<string, typeof grouped extends Map<string, infer V> ? V : never>();
+    for (const [cat, items] of grouped) {
+      const matched = items.filter((it) => matchNode(it, search));
+      if (matched.length > 0) result.set(cat, matched);
+    }
+    return result;
+  }, [grouped, search]);
+
+  // 默认全部展开；搜索时自动展开所有有结果的分类
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggle = (cat: string) => {
     setCollapsed((prev) => {
@@ -66,16 +93,36 @@ export default function NodePanel({ className = '' }: NodePanelProps) {
       style={{ background: 'var(--bg)', borderRight: '1px solid var(--border)' }}
     >
       <div className="px-3 py-3 border-b" style={{ borderColor: 'var(--border)' }}>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">节点</h3>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-2">节点</h3>
+        {/* 搜索框 */}
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-neutral-400 pointer-events-none" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索节点…"
+            className="w-full pl-7 pr-7 py-1.5 text-xs rounded-md border bg-white outline-none focus:ring-1 focus:ring-amber-400 transition-colors"
+            style={{ borderColor: 'var(--border)' }}
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center rounded text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto">
         {sortedCategories.map((cat) => {
-          const items = grouped.get(cat);
+          const items = filtered.get(cat);
           if (!items || items.length === 0) return null;
 
           const meta = NODE_CATEGORIES.find((c) => c.id === cat);
           const CatIcon = CATEGORY_ICONS[cat] || Zap;
-          const isCollapsed = collapsed.has(cat);
+          // 搜索时自动展开，非搜索时按用户折叠状态
+          const isCollapsed = isSearching ? false : collapsed.has(cat);
 
           return (
             <div key={cat}>
@@ -123,6 +170,11 @@ export default function NodePanel({ className = '' }: NodePanelProps) {
             </div>
           );
         })}
+        {isSearching && filtered.size === 0 && (
+          <div className="px-4 py-8 text-center text-xs text-neutral-400">
+            未找到匹配「{search}」的节点
+          </div>
+        )}
       </div>
 
       <div className="px-3 py-2 border-t" style={{ borderColor: 'var(--border)' }}>

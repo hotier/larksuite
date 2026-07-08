@@ -489,6 +489,61 @@ class FeishuBitable {
     return res.data?.record_id || recordId;
   }
 
+  /**
+   * 上传图片/文件到指定多维表格，返回可用于附件字段的 file_token
+   * 使用 drive.media.uploadAll，parent_node 直接填多维表格的 app_token，
+   * 这样文件会作为该云文档的素材，可直接写入附件字段 [{ file_token }]
+   *
+   * @param fileName   文件名
+   * @param appToken   目标多维表格 app_token（作为云文档父节点）
+   * @param dataUrl     base64 data URL（data:<mime>;base64,xxxx）或纯 base64 字符串
+   */
+  async uploadFileToBitable({
+    fileName,
+    appToken,
+    dataUrl,
+  }: {
+    fileName: string;
+    appToken: string;
+    dataUrl: string;
+  }): Promise<string> {
+    await this.ensureAuth();
+    if (!this.isUserAuthenticated()) {
+      throw new Error('用户未授权，无法上传文件到多维表格');
+    }
+
+    const commaIdx = dataUrl.indexOf(',');
+    const meta = commaIdx > -1 && dataUrl.slice(0, commaIdx).includes('base64')
+      ? dataUrl.slice(0, commaIdx)
+      : '';
+    const base64 = commaIdx > -1 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+    const mimeMatch = meta.match(/data:([^;]+)/);
+    const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+    const isImage = mime.startsWith('image/');
+    const buffer = Buffer.from(base64, 'base64');
+
+    const res: any = await this.client.drive.media.uploadAll(
+      {
+        data: {
+          file_name: fileName,
+          parent_type: isImage ? 'bitable_image' : 'bitable_file',
+          parent_node: appToken,
+          size: buffer.length,
+          file: buffer,
+        },
+      },
+      this.sdkOptions(),
+    );
+
+    const fileToken = res?.file_token ?? res?.data?.file_token;
+    if (!fileToken) {
+      throw new Error(
+        `上传文件失败: 未返回 file_token (${JSON.stringify(res)}). 请确认对该多维表格有写入权限`,
+      );
+    }
+    return fileToken;
+  }
+
   async listTables(
     appToken: string,
     pageSize = 100,

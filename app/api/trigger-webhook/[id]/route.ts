@@ -40,6 +40,17 @@ function getNestedValue(obj: Record<string, unknown>, dottedKey: string): unknow
   return current;
 }
 
+/** 序列化时裁剪超长字符串（避免 base64 图片撑爆日志） */
+function safeStringify(obj: unknown, max = 120): string {
+  try {
+    return JSON.stringify(obj, (_k, v) =>
+      typeof v === 'string' && v.length > max ? `${v.slice(0, max)}…(${v.length}字节)` : v,
+    );
+  } catch {
+    return String(obj);
+  }
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -82,20 +93,39 @@ export async function POST(
       );
     }
 
-    // 4. 解析请求体
+    // 4. 解析请求体（兼容 JSON / 表单 / multipart）
     let rawBody: Record<string, unknown> = {};
     let webhookContent: Record<string, unknown> = {};
+    const contentType = request.headers.get('content-type') || '';
     try {
-      rawBody = await request.json();
-      const isObj = !!rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody);
-      // 有 content 字段则取 content，否则把整包 body 当作内容（兼容两种传参方式）
-      webhookContent = isObj && 'content' in rawBody
-        ? ((rawBody.content as Record<string, unknown>) || {})
-        : isObj
-          ? rawBody
-          : {};
+      if (contentType.includes('multipart/form-data')) {
+        // 表单 / 文件上传（如 iOS 快捷指令传图片）：文件转 base64 data URL 注入 content
+        const form = await request.formData();
+        const textFields: Record<string, unknown> = {};
+        const fileFields: Record<string, unknown> = {};
+        for (const [k, v] of form.entries()) {
+          if (typeof v === 'string') {
+            textFields[k] = v;
+          } else {
+            const buf = Buffer.from(await v.arrayBuffer());
+            fileFields[k] = `data:${v.type || 'application/octet-stream'};base64,${buf.toString('base64')}`;
+          }
+        }
+        webhookContent = { ...textFields, ...fileFields };
+        rawBody = webhookContent;
+        console.log(`[webhook] 解析 multipart 表单：文本字段 ${Object.keys(textFields).join(',') || '无'}，文件字段 ${Object.keys(fileFields).join(',') || '无'}`);
+      } else {
+        rawBody = await request.json();
+        const isObj = !!rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody);
+        // 有 content 字段则取 content，否则把整包 body 当作内容（兼容两种传参方式）
+        webhookContent = isObj && 'content' in rawBody
+          ? ((rawBody.content as Record<string, unknown>) || {})
+          : isObj
+            ? rawBody
+            : {};
+      }
     } catch {
-      // 请求体为空或非 JSON，使用空 content
+      // 请求体为空或非预期格式，使用空 content
     }
 
     // 4b. 如果 trigger 配置了 webhookBodyTemplate，用它重新解析 JSON
@@ -126,7 +156,7 @@ export async function POST(
         console.warn('[webhook] 模板解析失败，使用原始 content:', err);
       }
     }
-    console.log(`[webhook] content:`, JSON.stringify(webhookContent));
+    console.log(`[webhook] content:`, safeStringify(webhookContent));
 
     // 5. 使用 DAG 执行引擎按拓扑序执行节点
     const result = await executeWorkflow(workflow, webhookContent, secretToken);

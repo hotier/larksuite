@@ -18,20 +18,49 @@ async function getBitableService() {
 
 // ---- 共享工具（与 action.plugin.ts 中的逻辑一致）----
 
-function resolveFieldValues(
+async function resolveFieldValues(
   node: WorkflowNode,
   ctx: ExecutionContext,
-): Record<string, unknown> | null {
+): Promise<Record<string, unknown> | null> {
   const mappings = node.actionConfig?.fieldMappings;
   if (!mappings || mappings.length === 0) return null;
 
+  const appToken = node.actionConfig?.targetAppToken || '';
   const fields: Record<string, unknown> = {};
   for (const m of mappings) {
     if (m.source === 'manual') {
       fields[m.fieldName] = m.manualValue;
     } else if (m.source === 'webhook') {
       const key = m.webhookKey.startsWith('content.') ? m.webhookKey.slice('content.'.length) : m.webhookKey;
-      fields[m.fieldName] = ctx.webhookContent[key] ?? '';
+      const raw = ctx.webhookContent[key];
+
+      // 附件字段：把 webhook 传来的图片/文件写入多维表格
+      if (m.fieldType === 'file' && typeof raw === 'string' && raw.length > 0) {
+        try {
+          if (raw.startsWith('http://') || raw.startsWith('https://')) {
+            // 公网 URL 直传附件（无需上传）
+            fields[m.fieldName] = [{ url: raw }];
+            continue;
+          }
+          if (raw.startsWith('data:')) {
+            const bitableService = await getBitableService();
+            const ext = (raw.match(/data:([^;/]+)/)?.[1] || 'bin').split('/')[1] || 'bin';
+            const fileToken = await bitableService.uploadFileToBitable({
+              fileName: `${m.fieldName || 'file'}.${ext}`,
+              appToken,
+              dataUrl: raw,
+            });
+            fields[m.fieldName] = [{ file_token: fileToken }];
+            continue;
+          }
+        } catch (err) {
+          console.error(`[webhook] 附件上传失败 (字段 ${m.fieldName}):`, err);
+          fields[m.fieldName] = '';
+          continue;
+        }
+      }
+
+      fields[m.fieldName] = raw ?? '';
     } else if (m.source === 'variable') {
       const parts = m.variableKey.split(':');
       const root = ctx.nodeOutputs.get(parts[1]);
@@ -72,7 +101,7 @@ export const actionExecutor: NodeExecutor = async (node, ctx) => {
   try {
     switch (actionType) {
       case 'create_record': {
-        const fields = resolveFieldValues(node, ctx);
+        const fields = await resolveFieldValues(node, ctx);
         if (!fields || Object.keys(fields).length === 0) {
           return mkStep(node.title, 'create_record', false, '无字段映射', undefined, stepStart);
         }
@@ -95,7 +124,7 @@ export const actionExecutor: NodeExecutor = async (node, ctx) => {
         }, stepStart);
       }
       case 'update_record': {
-        const fields = resolveFieldValues(node, ctx);
+        const fields = await resolveFieldValues(node, ctx);
         if (!fields || Object.keys(fields).length === 0) {
           return mkStep(node.title, 'update_record', false, '无字段映射', undefined, stepStart);
         }

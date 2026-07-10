@@ -26,7 +26,10 @@ import type {
 const API_URL = '/api/bitable';
 
 // ====== 模块级缓存：避免页面切换时重复请求 ======
-const APPS_CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+// 采用「会话内缓存 + 事件失效」策略：不设置明确过期时间，
+// 缓存仅在整页刷新时清空（内存存储，非 localStorage）。
+// 数据更新依赖两类异步事件：① 应用内变更（新建/删除）后主动失效；
+// ② 用户点击「同步」按钮强制重新拉取。
 
 interface AppsCacheEntry {
   data: ListAppsData;
@@ -103,9 +106,9 @@ export interface ListAppsResult {
   fromCache: boolean;
 }
 
-/** 获取所有多维表格应用列表（带模块级缓存） */
+/** 获取所有多维表格应用列表（带模块级缓存，会话内有效、无明确过期） */
 export async function listApps(): Promise<ListAppsResult> {
-  if (appsCache && Date.now() - appsCache.timestamp < APPS_CACHE_TTL) {
+  if (appsCache) {
     return { data: appsCache.data, fromCache: true };
   }
   const data = await request<ListAppsData>({ action: 'listApps' });
@@ -126,8 +129,29 @@ export async function createApp(name: string, folderToken?: string): Promise<App
 
 // ====== 云文档 (Docx) ======
 
+// 会话内缓存（无明确过期），按 folderToken 索引；仅缓存首页（pageToken 为空）
+const docsCache = new Map<string, { data: ListAppsData; ts: number }>();
+
+/** 清除云文档缓存（新建/删除/登出时调用）；不传 folderToken 则清空全部 */
+export function invalidateDocsCache(folderToken = ''): void {
+  if (folderToken === '') docsCache.clear();
+  else docsCache.delete(folderToken);
+}
+
 export async function listDocs(pageSize = 100, pageToken = '', folderToken = ''): Promise<ListAppsData> {
-  return request<ListAppsData>({ action: 'listDocs', pageSize, pageToken, folderToken });
+  if (pageToken === '') {
+    const cached = docsCache.get(folderToken);
+    if (cached) return cached.data;
+  }
+  const data = await request<ListAppsData>({ action: 'listDocs', pageSize, pageToken, folderToken });
+  if (pageToken === '') docsCache.set(folderToken, { data, ts: Date.now() });
+  return data;
+}
+
+/** 强制刷新云文档列表（绕过缓存重新拉取并更新缓存） */
+export async function refreshDocs(folderToken = ''): Promise<ListAppsData> {
+  invalidateDocsCache(folderToken);
+  return listDocs(100, '', folderToken);
 }
 
 export async function createDoc(title: string, folderToken?: string): Promise<App> {
@@ -136,8 +160,29 @@ export async function createDoc(title: string, folderToken?: string): Promise<Ap
 
 // ====== 在线表格 (Sheet) ======
 
+// 会话内缓存（无明确过期），按 folderToken 索引；仅缓存首页（pageToken 为空）
+const sheetsCache = new Map<string, { data: ListAppsData; ts: number }>();
+
+/** 清除在线表格缓存（新建/删除/登出时调用）；不传 folderToken 则清空全部 */
+export function invalidateSheetsCache(folderToken = ''): void {
+  if (folderToken === '') sheetsCache.clear();
+  else sheetsCache.delete(folderToken);
+}
+
 export async function listSheets(pageSize = 100, pageToken = '', folderToken = ''): Promise<ListAppsData> {
-  return request<ListAppsData>({ action: 'listSheets', pageSize, pageToken, folderToken });
+  if (pageToken === '') {
+    const cached = sheetsCache.get(folderToken);
+    if (cached) return cached.data;
+  }
+  const data = await request<ListAppsData>({ action: 'listSheets', pageSize, pageToken, folderToken });
+  if (pageToken === '') sheetsCache.set(folderToken, { data, ts: Date.now() });
+  return data;
+}
+
+/** 强制刷新在线表格列表（绕过缓存重新拉取并更新缓存） */
+export async function refreshSheets(folderToken = ''): Promise<ListAppsData> {
+  invalidateSheetsCache(folderToken);
+  return listSheets(100, '', folderToken);
 }
 
 export async function createSheet(title: string, folderToken?: string): Promise<App> {

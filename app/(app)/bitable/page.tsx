@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Table2, ClipboardList, FileText, ChevronRight } from 'lucide-react';
 import type { App, Table, Field, FieldType, BitableRecord, ToastMessage } from '@/types';
 import {
-  refreshApps, invalidateAppsCache, createApp,
+  listApps, refreshApps, invalidateAppsCache, createApp,
   listTables, createTable, deleteTable, listFields,
   listRecords, createRecord, deleteApiRecord,
   logout as apiLogout,
@@ -78,10 +78,19 @@ export default function DashboardPage() {
 
   const handleListApps = useCallback(() => {
     withLoading(async () => {
-      const { data } = await refreshApps();
+      const { data } = await listApps();
       setApps(data.files || []);
     }, undefined, '获取多维表格列表失败');
   }, []);
+
+  // 同步按钮：强制绕过缓存刷新飞书数据
+  const handleSyncApps = useCallback(() => {
+    withLoading(async () => {
+      const { data } = await refreshApps();
+      setApps(data.files || []);
+      addToast('success', `已同步 ${data.files?.length ?? 0} 个多维表格`);
+    }, undefined, '同步多维表格列表失败');
+  }, [addToast]);
 
   const handleCreateApp = useCallback(async (name: string, folderToken?: string) => {
     setIsCreating(true);
@@ -407,7 +416,7 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3">
           <OAuthLogin
             isAuthenticated={isAuthenticated} oauthUrl="" isLoading={isLoading}
-            onFetchApps={handleListApps} onLogout={handleLogout} hideLogin
+            onFetchApps={handleSyncApps} onLogout={handleLogout} hideLogin
           />
         </div>
       </header>

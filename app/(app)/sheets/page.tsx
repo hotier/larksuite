@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Grid3X3, Plus, Trash2 } from 'lucide-react';
 import type { App, ToastMessage } from '@/types';
 import {
-  listSheets, createSheet, deleteFile,
+  listSheets, createSheet, deleteFile, invalidateSheetsCache,
   logout as apiLogout,
 } from '@/lib/api';
 import OAuthLogin from '@/app/components/OAuthLogin';
@@ -62,6 +62,7 @@ export default function SheetsPage() {
       setNewTitle('');
       setShowCreate(false);
       addToast('success', `已创建在线表格「${newTitle.trim()}」`);
+      invalidateSheetsCache();
       await loadFiles();
     } catch (err) {
       addToast('error', `创建失败: ${err instanceof Error ? err.message : '未知错误'}`);
@@ -77,6 +78,7 @@ export default function SheetsPage() {
     try {
       await deleteFile(file.app_token, 'sheet');
       addToast('success', `已删除「${file.name}」`);
+      invalidateSheetsCache();
       setFiles((prev) => prev.filter((f) => f.app_token !== file.app_token));
     } catch (err) {
       addToast('error', `删除失败: ${err instanceof Error ? err.message : '未知错误'}`);
@@ -98,7 +100,7 @@ export default function SheetsPage() {
         <div className="flex items-center gap-3">
           <OAuthLogin
             isAuthenticated={isAuthenticated} oauthUrl="" isLoading={isLoading}
-            onFetchApps={loadFiles} onLogout={async () => { await apiLogout(); setFiles([]); window.location.replace('/'); }} hideLogin
+            onFetchApps={() => { invalidateSheetsCache(); loadFiles(); }} onLogout={async () => { await apiLogout(); invalidateSheetsCache(); setFiles([]); window.location.replace('/'); }} hideLogin
           />
         </div>
       </header>

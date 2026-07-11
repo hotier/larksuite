@@ -139,11 +139,15 @@ export async function saveToken(token: {
     updatedAt: new Date().toISOString(),
   };
 
-  // 立即更新内存缓存（零等待）
+  // 立即更新内存缓存（零等待，即便 DB 写入失败本次会话仍可用）
   _cached = stored;
 
-  // 通过写锁序列化数据库写入
-  await withWriteLock(() => saveToDb(stored));
+  // 通过写锁序列化数据库写入；DB 暂不可用时降级为「仅内存」，不阻断登录
+  try {
+    await withWriteLock(() => saveToDb(stored));
+  } catch (err) {
+    console.warn('[token-store] 持久化 token 到数据库失败，降级为内存存储（重启后失效）:', err instanceof Error ? err.message : err);
+  }
 }
 
 /**

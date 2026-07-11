@@ -1,16 +1,19 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Grid3X3, Plus, Trash2, Search } from 'lucide-react';
+import { Grid3X3, Plus, Trash2, Search, X, ExternalLink } from 'lucide-react';
 import type { App, ToastMessage } from '@/types';
 import {
   listSheets, createSheet, deleteFile, invalidateSheetsCache, refreshSheets,
+  getUserProfile,
   logout as apiLogout,
 } from '@/lib/api';
 import TopBar from '@/app/components/TopBar';
 import Toast from '@/app/components/Toast';
 import NameCard from '@/app/components/NameCard';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
+import { FileListSkeleton } from '@/app/components/Skeletons';
+import { useRouteTransition } from '@/app/components/RouteTransition';
 
 let toastId = 0;
 function nextId() { return `t${++toastId}`; }
@@ -27,9 +30,13 @@ export default function SheetsPage() {
   const [nameCardRect, setNameCardRect] = useState<DOMRect | undefined>(undefined);
   const [deleteTarget, setDeleteTarget] = useState<App | null>(null);
   const [search, setSearch] = useState('');
+  const [previewFile, setPreviewFile] = useState<App | null>(null);
+
+  const { endTransition } = useRouteTransition();
 
   useEffect(() => {
     setIsAuthenticated(true); // AuthGuard 已验证
+    endTransition(); // 结束从首页进入的过渡动画
   }, []);
 
   const addToast = useCallback((type: ToastMessage['type'], text: string) => {
@@ -115,8 +122,41 @@ export default function SheetsPage() {
         </div>
       </TopBar>
 
-      <div className="flex-1 overflow-auto">
-        <div className="px-6 py-6 space-y-6">
+      {previewFile ? (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="flex items-center gap-3 px-5 h-14 border-b border-neutral-200 flex-shrink-0">
+            <Grid3X3 className="w-5 h-5 text-green-500 flex-shrink-0" />
+            <span className="font-semibold text-neutral-900 truncate">{previewFile.name}</span>
+            <div className="ml-auto flex items-center gap-2">
+              <a
+                href={previewFile.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-neutral-600 border border-neutral-200 rounded-md hover:bg-neutral-50 transition-colors"
+                title="在新窗口打开原链接"
+              >
+                <ExternalLink className="w-4 h-4" />
+                新窗口打开
+              </a>
+              <button
+                type="button"
+                onClick={() => setPreviewFile(null)}
+                className="p-1.5 rounded-md text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 transition-colors"
+                title="关闭预览"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+          <iframe
+            src={previewFile.url || ''}
+            title={previewFile.name}
+            className="flex-1 w-full border-0"
+          />
+        </div>
+      ) : (
+        <div className="flex-1 overflow-auto">
+          <div className="px-6 py-6 space-y-6">
           {/* Toolbar */}
           <div className="flex items-center justify-between">
             <div className="relative w-72">
@@ -140,11 +180,7 @@ export default function SheetsPage() {
 
           {/* File List */}
           {isLoading ? (
-            <div className="rounded-xl bg-white border border-neutral-200 overflow-hidden animate-pulse">
-              {[...Array(5)].map((_, i) => (
-                <div key={i} className="h-14 border-b border-neutral-50 last:border-b-0" />
-              ))}
-            </div>
+            <FileListSkeleton />
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-neutral-300">
               <Grid3X3 className="w-16 h-16 mb-4" />
@@ -168,14 +204,14 @@ export default function SheetsPage() {
                 >
                   <div className="flex-1 min-w-0 flex items-center gap-2.5">
                     <Grid3X3 className="w-4 h-4 text-green-500 flex-shrink-0" />
-                    <a
-                      href={file.url || '#'}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm font-medium text-neutral-800 truncate group-hover:text-green-600 transition-colors"
+                    <button
+                      type="button"
+                      onClick={() => setPreviewFile(file)}
+                      className="text-sm font-medium text-neutral-800 truncate group-hover:text-green-600 transition-colors text-left"
+                      title="点击内嵌预览"
                     >
                       {file.name}
-                    </a>
+                    </button>
                   </div>
                   <div className="w-[140px] text-xs text-neutral-400 truncate flex-shrink-0">
                     {file.creator_name ? (
@@ -231,6 +267,7 @@ export default function SheetsPage() {
           )}
         </div>
       </div>
+      )}
 
       {/* NameCard Popover */}
       {nameCardFile && (
@@ -238,6 +275,7 @@ export default function SheetsPage() {
           profile={nameCardFile.creator_profile}
           name={nameCardFile.creator_name || nameCardFile.creator_id || ''}
           anchorRect={nameCardRect}
+          onFetchProfile={getUserProfile}
           onClose={() => setNameCardFile(null)}
         />
       )}

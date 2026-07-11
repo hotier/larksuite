@@ -1,42 +1,37 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import LoadingScreen from './LoadingScreen';
+import { checkAuthStatus, invalidateAuthCache } from '@/lib/api';
 
-/** 通过 API 检查 HttpOnly Cookie 中的 token 是否有效 */
-async function checkTokenFromCookie(): Promise<boolean> {
-  try {
-    const res = await fetch('/api/bitable', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ action: 'authStatus' }),
-    });
-    const json = await res.json();
-    return json?.data?.authenticated === true;
-  } catch {
-    return false;
-  }
-}
+// 首屏加载动画最短展示时长，避免校验过快时 LoadingScreen 一闪而过
+const MIN_DURATION = 600;
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
+  const startRef = useRef(Date.now());
 
   useEffect(() => {
-    checkTokenFromCookie().then((valid) => {
-      if (!valid) {
-        window.location.replace('/');
-      } else {
-        setReady(true);
-      }
-    });
+    const start = Date.now();
+    checkAuthStatus()
+      .then((valid) => {
+        if (!valid) {
+          invalidateAuthCache();
+          window.location.replace('/');
+          return;
+        }
+        const elapsed = Date.now() - start;
+        // 仅当本次是「真实网络校验」（耗时较长）时才保底最短展示；
+        // 命中会话内缓存（瞬时返回）则直接放行，避免与 RouteTransition 的
+        // 600ms 叠加，造成首页 ↔ 子页面切换时明显的双重延迟。
+        const artificial = elapsed < 60 ? 0 : Math.max(0, MIN_DURATION - elapsed);
+        setTimeout(() => setReady(true), artificial);
+      });
   }, []);
 
   if (!ready) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-neutral-50">
-        <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-      </div>
-    );
+    // 直接刷新/首次进入时显示全屏加载动画，与站内跳转（RouteTransition）视觉统一
+    return <LoadingScreen label="Lark Workspace" accent="amber" fullScreen />;
   }
 
   return <>{children}</>;

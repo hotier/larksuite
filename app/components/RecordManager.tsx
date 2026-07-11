@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Type, Hash, Calendar, CircleDot, CheckSquare, Check, User, Phone, Mail, Link, Paperclip, Sigma, Search, Clock, UserPlus, History } from 'lucide-react';
+import { Type, Hash, Calendar, CircleDot, CheckSquare, Check, User, Phone, Mail, Link, Paperclip, Sigma, Search, Clock, UserPlus, History, Download, Loader2 } from 'lucide-react';
 import type { Field, FieldType, BitableRecord } from '@/types';
 import { exportBitable } from '@/lib/api';
+import { formatFieldValue } from '@/lib/field-format';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
 
 const TYPE_LABELS: Record<FieldType, string> = {
@@ -49,6 +50,7 @@ const READONLY_FIELD_TYPES: FieldType[] = [
 interface RecordManagerProps {
   appToken: string;
   tableId: string;
+  appName: string;
   fields: Field[];
   records: BitableRecord[];
   isLoading: boolean;
@@ -110,57 +112,6 @@ function NoFields() {
   );
 }
 
-/** 格式化时间戳为可读日期 */
-function formatDateTime(raw: number | string): string {
-  const ms = typeof raw === 'string' ? Number(raw) : raw;
-  if (!ms || ms <= 0 || Number.isNaN(ms)) return '—';
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** 判断是否为日期类字段 */
-function isDateField(type: FieldType): boolean {
-  return type === 'date' || type === 'created_time' || type === 'updated_time';
-}
-
-/** 尝试将值转为日期：兼容 number / 数字字符串 / {timestamp} 对象（飞书 date 字段常返回该结构） */
-function tryFormatDate(value: unknown): string | null {
-  let ms: number | null = null;
-  if (typeof value === 'number') {
-    ms = value;
-  } else if (typeof value === 'string') {
-    const n = Number(value);
-    if (!Number.isNaN(n) && n > 946684800000) ms = n; // 合理的毫秒时间戳范围：> 2000-01-01
-  } else if (value && typeof value === 'object' && 'timestamp' in (value as Record<string, unknown>)) {
-    const t = (value as Record<string, unknown>).timestamp;
-    if (typeof t === 'number') ms = t;
-    else if (typeof t === 'string') { const n = Number(t); if (!Number.isNaN(n)) ms = n; }
-  }
-  if (ms == null || ms <= 0 || Number.isNaN(ms)) return null;
-  return formatDateTime(ms);
-}
-
-/** 把单选/多选/公式的值解析为显示文字。
- * 飞书可能返回：选项 id 字符串（optxxx）、选项对象（{text,id}），或它们的数组。
- * @param optionMap 选项id → 显示文字 的映射 */
-function resolveOptionText(value: unknown, optionMap: Record<string, string>): string {
-  const toText = (v: unknown): string => {
-    if (typeof v === 'string') return optionMap[v] || v;
-    if (v && typeof v === 'object') {
-      const o = v as Record<string, unknown>;
-      if (typeof o.text === 'string' && o.text) return o.text;
-      if (typeof o.id === 'string' && o.id) return optionMap[o.id] || o.id;
-    }
-    return v == null ? '—' : String(v);
-  };
-  if (Array.isArray(value)) {
-    const parts = value.map(toText).filter(Boolean);
-    return parts.length ? parts.join(', ') : '—';
-  }
-  return toText(value);
-}
-
 /** 从记录中安全获取字段值 — 兼容 field_id 和字段名称两种 key 格式 */
 export function getRecordFieldValue(record: BitableRecord, field: Field): unknown {
   if (!record?.fields) return undefined;
@@ -170,53 +121,12 @@ export function getRecordFieldValue(record: BitableRecord, field: Field): unknow
   return undefined;
 }
 
-/** 渲染记录的字段值。
- * @param optionMap 选项 id → 显示文字 的全局映射（由所有单选/多选字段的选项汇总），
- *                  用于把公式/单选返回的 optxxx 选项 id 还原为可读文字。
+/** 渲染记录的字段值（薄封装，格式规则见共享模块 @/lib/field-format）。
+ * 前端空值展示「—」，与导出（空串）的唯一差异通过 emptyText 参数吸收。
+ * @param optionMap 选项 id → 显示文字 的全局映射，用于把公式/单选返回的 optxxx 还原为文字。
  */
 function renderFieldValue(value: unknown, fieldType: FieldType, optionMap?: Record<string, string>): string {
-  if (value === null || value === undefined) return '—';
-  // 日期/时间类字段（飞书返回毫秒时间戳：number / 字符串 / {timestamp} 对象）
-  if (isDateField(fieldType) || fieldType === 'created_by' || fieldType === 'updated_by') {
-    const formatted = tryFormatDate(value);
-    if (formatted) return formatted;
-  }
-  // 人员类字段（创建人/修改人 created_by / updated_by）：飞书返回 [{id,name,type}] 数组，展示姓名
-  if ((fieldType === 'created_by' || fieldType === 'updated_by') && Array.isArray(value)) {
-    const names = value
-      .map((v) =>
-        typeof v === 'object' && v !== null
-          ? (v as Record<string, unknown>).name || (v as Record<string, unknown>).id || ''
-          : String(v),
-      )
-      .filter(Boolean);
-    return names.length ? names.join(', ') : '—';
-  }
-  // 公式/单选/多选：值可能是选项 id（optxxx）、选项对象 {text,id}，或它们的数组。统一解析为显示文字
-  if (
-    (fieldType === 'formula' || fieldType === 'single_select' || fieldType === 'multi_select') &&
-    optionMap
-  ) {
-    return resolveOptionText(value, optionMap);
-  }
-  if (fieldType === 'url' && typeof value === 'object') {
-    const u = value as { link?: string; text?: string };
-    return u.text || u.link || '—';
-  }
-  if (Array.isArray(value)) {
-    // 附件文件对象数组
-    if (fieldType === 'file') {
-      return value
-        .map((v) => (typeof v === 'object' && v !== null ? (v as { name?: string }).name || '' : ''))
-        .filter(Boolean)
-        .join(', ');
-    }
-    return value
-      .map((v) => (typeof v === 'object' ? (v as { text?: string }).text || JSON.stringify(v) : String(v)))
-      .join(', ');
-  }
-  if (typeof value === 'boolean') return value ? '✓' : '✗';
-  return String(value);
+  return formatFieldValue(value, fieldType, { optionMap, emptyText: '—' });
 }
 
 /** 新增记录表单组件 */
@@ -417,6 +327,15 @@ function AttachmentsCell({
 }) {
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const fetchedRef = useRef(false);
+  // 已预取的预览链接 key，避免 hover 重复预取
+  const prefetchedRef = useRef<Set<string>>(new Set());
+
+  // 按需预加载：hover 时预热预览链接，文件内容进入浏览器缓存，点击新标签秒开
+  const prefetch = (url: string, key: string) => {
+    if (prefetchedRef.current.has(key)) return;
+    prefetchedRef.current.add(key);
+    fetch(url, { cache: 'force-cache' }).catch(() => {});
+  };
 
   useEffect(() => {
     if (fetchedRef.current) return;
@@ -477,6 +396,7 @@ function AttachmentsCell({
             href={previewUrl || '#'}
             target={previewUrl ? '_blank' : undefined}
             rel="noopener noreferrer"
+            onMouseEnter={() => { if (previewUrl) prefetch(previewUrl, ft); }}
             className={`inline-flex items-center gap-1 text-xs truncate max-w-full ${
               previewUrl ? 'text-blue-600 hover:text-blue-800 hover:underline' : 'text-neutral-400'
             }`}
@@ -494,6 +414,7 @@ function AttachmentsCell({
 export default function RecordManager({
   appToken,
   tableId: _tableId,
+  appName,
   fields,
   records,
   isLoading,
@@ -583,14 +504,14 @@ export default function RecordManager({
             </button>
           )}
 
-          {/* 导出整个多维表格为 Excel */}
+          {/* 导出当前数据表为 Excel（纯图标，与放大按钮一致） */}
           <button
             onClick={async () => {
-              if (exporting || !appToken) return;
+              if (exporting || !appToken || !_tableId) return;
               setExporting(true);
               setExportMsg(null);
               try {
-                await exportBitable(appToken, 'xlsx');
+                await exportBitable(appToken, 'xlsx', _tableId, appName);
               } catch (err) {
                 setExportMsg({ type: 'error', text: `导出失败：${err instanceof Error ? err.message : '未知错误'}` });
                 setTimeout(() => setExportMsg(null), 5000);
@@ -599,11 +520,14 @@ export default function RecordManager({
               }
             }}
             disabled={exporting}
-            title="导出整个多维表格为 Excel"
-            className="px-3 py-2 text-sm rounded-md border transition-colors disabled:opacity-50"
-            style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
+            title="导出当前数据表为 Excel"
+            className="p-2 text-neutral-500 bg-neutral-100 rounded-md hover:bg-neutral-200 transition-colors disabled:opacity-50"
           >
-            {exporting ? '导出中…' : '⬇ 导出'}
+            {exporting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
           </button>
           {exportMsg && (
             <span className="text-xs text-red-500">{exportMsg.text}</span>
@@ -669,7 +593,7 @@ export default function RecordManager({
 
       {/* 表格 —— 滑动条内联在表体内 */}
       {records.length > 0 && (
-        <div className="flex-1 min-h-0 flex flex-col rounded-md border border-neutral-100 overflow-auto">
+        <div className="flex-1 min-h-0 flex flex-col rounded-md border border-neutral-100 overflow-auto theme-no-transition">
           {/* 表头 */}
           <div className="flex items-center gap-3 px-4 py-3 bg-neutral-100 text-xs font-semibold text-neutral-400 uppercase tracking-wider min-w-max sticky top-0 z-10 flex-shrink-0"
             style={{ minWidth: `${48 + tableColumns.length * 120 + 80 + (tableColumns.length + 2) * 12}px` }}>

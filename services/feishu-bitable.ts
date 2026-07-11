@@ -1,6 +1,7 @@
 import { Client, withUserAccessToken } from '@larksuiteoapi/node-sdk';
 import { loadTokenSync, saveToken, deleteToken, reloadToken } from '@/lib/token-store';
 import { withCache, cacheKey, cacheDel, cacheDelByPrefix, TTL } from '@/lib/cache';
+import { formatFieldValue } from '@/lib/field-format';
 import type {
   BitableRecord,
   ListRecordsData,
@@ -12,6 +13,29 @@ import type {
   DriveFileType,
   UserProfile,
 } from '@/types';
+
+/**
+ * 容错解析飞书响应：先直接 JSON.parse；若失败，尝试从可能被前后垃圾字符
+ * 包裹的响应体中提取第一个 JSON 对象/数组（如 `null` 后跟额外内容、或前面有非 JSON 前缀）。
+ */
+function parseFeishuJson(raw: string) {
+  const trimmed = raw.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // 直接解析失败，尝试定位 body 中的 JSON 片段
+  }
+  const start = trimmed.search(/[[{]/);
+  const end = Math.max(trimmed.lastIndexOf('}'), trimmed.lastIndexOf(']'));
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      // 仍失败则返回 undefined，由调用方记录原始内容
+    }
+  }
+  return undefined;
+}
 
 // ====== 飞书字段类型数字 → 字符串映射 ======
 const FIELD_TYPE_MAP: Record<number, FieldType> = {
@@ -263,7 +287,7 @@ class FeishuBitable {
       redirect_uri: uri,
       response_type: 'code',
       scope:
-        'bitable:app bitable:app:readonly drive:drive drive:file docx:document docx:document:readonly sheets:spreadsheet sheets:spreadsheet:readonly contact:contact.base:readonly space:document:delete offline_access',
+        'bitable:app bitable:app:readonly drive:drive drive:file drive:export:readonly docx:document docx:document:readonly docs:document:export sheets:spreadsheet sheets:spreadsheet:readonly contact:contact.base:readonly space:document:delete offline_access',
       state: state || '',
     });
     return `https://open.feishu.cn/open-apis/authen/v1/authorize?${params.toString()}`;
@@ -912,6 +936,7 @@ class FeishuBitable {
   private tenantAccessToken: string | null = null;
   private tenantTokenExpireTime = 0;
 
+
   private async getTenantAccessToken(): Promise<string | null> {
     if (this.tenantAccessToken && Date.now() < this.tenantTokenExpireTime - 60000) {
       return this.tenantAccessToken;
@@ -935,14 +960,21 @@ class FeishuBitable {
     return null;
   }
 
-  /** 从 API 返回的用户数据提取 UserProfile */
+  /** 从 API 返回的用户数据提取 UserProfile（注意：通讯录返回的头像在 avatar 对象里，不是 avatar_url） */
   private extractUserProfile(user: Record<string, unknown>, idType: string): { key: string; profile: UserProfile } | null {
-    const uid = user[idType] as string;
+    const uid = (user[idType] || user.open_id || user.union_id || user.user_id || user.id) as string;
     if (!uid) return null;
+    const avatarObj = user.avatar as Record<string, unknown> | undefined;
+    const avatarUrl = (
+      avatarObj?.avatar_72 ||
+      avatarObj?.avatar_origin ||
+      avatarObj?.avatar_240 ||
+      user.avatar_url
+    ) as string | undefined;
     const profile: UserProfile = {
-      open_id: uid,
-      name: (user.name || user.email || user.mobile || uid) as string,
-      avatar_url: user.avatar_url as string | undefined,
+      open_id: (user.open_id || uid) as string,
+      name: (user.name || user.en_name || user.email || user.mobile || uid) as string,
+      avatar_url: avatarUrl,
       email: user.email as string | undefined,
       mobile: user.mobile as string | undefined,
       en_name: user.en_name as string | undefined,
@@ -965,7 +997,15 @@ class FeishuBitable {
           method: 'GET',
           headers: { 'Authorization': `Bearer ${token}` },
         });
-        const json = await res.json();
+        const rawText = await res.text();
+        const json = parseFeishuJson(rawText);
+        if (!json) {
+          console.warn(
+            `[FeishuBitable.getUserProfilesOneByOne] ${idType}(${uid}) 响应非合法JSON (status=${res.status}, content-type=${res.headers.get('content-type')}):`,
+            rawText.slice(0, 200),
+          );
+          continue;
+        }
         if (json.code === 0 && json.data?.user) {
           const entry = this.extractUserProfile(json.data.user as Record<string, unknown>, idType);
           if (entry) profileMap[entry.key] = entry.profile;
@@ -985,51 +1025,114 @@ class FeishuBitable {
     if (userIds.length === 0) return {};
 
     const userToken = userAccessToken ?? (this.isUserAuthenticated() ? this.userAccessToken : null);
+    // 单次调用内：若批量接口被确认路由 404（应用未开通权限），则跳过剩余批量变体，避免刷屏；下次调用会重新尝试
+    let batchRouteNotFound = false;
+    // user_access_token 缺少 contact:user.basic_profile:readonly 授权时会稳定返回 99991679，user 路径不可用，无需重试 union_id
+    let userTokenUnauthorized = false;
+    // 完整 contact/v3/users/batch 需要 contact:user.base:readonly（user）/contact:contact.base:readonly（tenant）授权，
+    // 缺少时稳定返回 99991679，标记后跳过完整 batch，直接走 basic_batch（仅 name）
+    let batchFullUnauthorized = false;
 
-    const batchGet = async (
+    // 调用单个批量 endpoint（batch=完整含头像；basic_batch=仅 user_id/name）
+    const callEndpoint = async (
       ids: string[],
       idType: string,
       token: string,
       label: string,
-    ): Promise<Record<string, UserProfile>> => {
+      endpoint: 'batch' | 'basic_batch',
+    ): Promise<Record<string, UserProfile> | null> => {
+      // 返回 null 表示接口不可用（需跳过）；返回 {} 表示可用但本批无数据
+      const isFull = endpoint === 'batch';
       const profileMap: Record<string, UserProfile> = {};
       const batchSize = 50;
       for (let i = 0; i < ids.length; i += batchSize) {
         const batch = ids.slice(i, i + batchSize);
         try {
-          const url = `https://open.feishu.cn/open-apis/contact/v3/users/batch`;
+          const url = `https://open.feishu.cn/open-apis/contact/v3/users/${endpoint}`;
+          const body: Record<string, unknown> = { user_ids: batch, user_id_type: idType };
+          // 完整 batch 指定 fields 一次拿回头像等基础信息；basic_batch 只支持 user_id/name
+          if (isFull) {
+            body.fields = ['open_id', 'name', 'avatar', 'email', 'mobile', 'en_name', 'nickname', 'description'];
+          }
           const res = await fetch(url, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${token}`,
               'Content-Type': 'application/json; charset=utf-8',
             },
-            body: JSON.stringify({ user_ids: batch, user_id_type: idType }),
+            body: JSON.stringify(body),
           });
-          const json = await res.json();
-          console.log(`[FeishuBitable.getUserNamesBatch] ${idType}(${label}) 响应:`, JSON.stringify({ code: json.code, msg: json.msg, itemCount: json.data?.items?.length }));
-          if (json.code === 0 && json.data?.items) {
-            for (const user of json.data.items) {
+          const rawText = await res.text();
+          const json = parseFeishuJson(rawText);
+          if (!json) {
+            // 飞书网关对未授权/不存在的路由直接返回 Go 默认 404 页
+            const isRoute404 = res.status === 404 && /404 page not found/i.test(rawText);
+            if (isRoute404) {
+              batchRouteNotFound = true;
+              console.warn('[FeishuBitable.getUserNamesBatch] 批量用户接口返回 404（应用未开通 contact 批量权限或路由不存在），后续将直接跳过批量接口');
+              return null;
+            }
+            console.warn(
+              `[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) 响应非合法JSON (status=${res.status}):`,
+              rawText.slice(0, 200),
+            );
+            return null;
+          }
+          // basic_batch 返回 data.users（含 user_id/name）；完整 batch 返回 data.items
+          const users = (json.data?.users ?? json.data?.items) as Record<string, unknown>[] | undefined;
+          if (json.code === 0 && users) {
+            if (!isFull) {
+              console.log(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) 响应:`, JSON.stringify({ code: json.code, msg: json.msg, itemCount: users?.length }));
+            } else {
+              const withAvatar = users.filter((u) => (u as Record<string, unknown>)?.avatar).length;
+              console.log(`[FeishuBitable.getUserNamesBatch] 完整batch(${label}) 成功: 共${users.length}人, 含头像${withAvatar}人`);
+            }
+            for (const user of users) {
               const entry = this.extractUserProfile(user as Record<string, unknown>, idType);
               if (entry) profileMap[entry.key] = entry.profile;
             }
           } else {
-            console.warn(`[FeishuBitable.getUserNamesBatch] ${idType}(${label}) API返回非0:`, json.code, json.msg);
+            // 99991679/99991672 = 缺少对应授权
+            if (json.code === 99991679 || json.code === 99991672) {
+              if (label === 'user') userTokenUnauthorized = true;
+              if (isFull) batchFullUnauthorized = true;
+              console.warn(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${label}) 缺少授权 (code=${json.code})，将回退 basic_batch/tenant_token`);
+            } else {
+              console.warn(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) API返回非0:`, json.code, json.msg);
+            }
+            return null;
           }
         } catch (err) {
-          console.warn(`[FeishuBitable.getUserNamesBatch] ${idType}(${label}) batch ${i} 失败:`, err);
+          console.warn(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) 失败:`, err);
+          return null;
         }
       }
       return profileMap;
     };
 
+    // 优先完整 batch（拿头像/邮箱等），不可用或无数据则回退 basic_batch（仅 name）
+    const batchGet = async (
+      ids: string[],
+      idType: string,
+      token: string,
+      label: string,
+    ): Promise<Record<string, UserProfile>> => {
+      if (batchFullUnauthorized) {
+        return (await callEndpoint(ids, idType, token, label, 'basic_batch')) ?? {};
+      }
+      const full = await callEndpoint(ids, idType, token, label, 'batch');
+      if (full && Object.keys(full).length > 0) return full;
+      const basic = await callEndpoint(ids, idType, token, label, 'basic_batch');
+      return { ...(full ?? {}), ...(basic ?? {}) };
+    };
+
     let profileMap: Record<string, UserProfile> = {};
 
-    // 1. 优先用 user_access_token + open_id
-    if (userToken) {
+    // 1. 优先用 user_access_token + open_id（批量接口若本次确认路由 404 则跳过后续变体）
+    if (!batchRouteNotFound && userToken) {
       profileMap = await batchGet(userIds, 'open_id', userToken, 'user');
       let unresolved = userIds.filter((id) => !profileMap[id]);
-      if (unresolved.length > 0) {
+      if (unresolved.length > 0 && !batchRouteNotFound && !userTokenUnauthorized) {
         console.log('[FeishuBitable.getUserNamesBatch] user_token未解析的ID (尝试union_id):', unresolved);
         const unionMap = await batchGet(unresolved, 'union_id', userToken, 'user');
         Object.assign(profileMap, unionMap);
@@ -1046,15 +1149,19 @@ class FeishuBitable {
     if (stillUnresolved.length > 0) {
       const tt = await this.getTenantAccessToken();
       if (tt) {
-        let tenantMap = await batchGet(stillUnresolved, 'open_id', tt, 'tenant');
-        let left = stillUnresolved.filter((id) => !tenantMap[id]);
-        if (left.length > 0) {
-          console.log('[FeishuBitable.getUserNamesBatch] tenant_token未解析的ID (尝试union_id):', left);
-          const unionMap = await batchGet(left, 'union_id', tt, 'tenant');
-          Object.assign(tenantMap, unionMap);
+        let tenantMap: Record<string, UserProfile> = {};
+        let left: string[] = [];
+        if (!batchRouteNotFound) {
+          tenantMap = await batchGet(stillUnresolved, 'open_id', tt, 'tenant');
+          left = stillUnresolved.filter((id) => !tenantMap[id]);
+          if (left.length > 0 && !batchRouteNotFound) {
+            console.log('[FeishuBitable.getUserNamesBatch] tenant_token未解析的ID (尝试union_id):', left);
+            const unionMap = await batchGet(left, 'union_id', tt, 'tenant');
+            Object.assign(tenantMap, unionMap);
+          }
         }
 
-        // 3. 逐条API兜底
+        // 3. 逐条API兜底（逐条 GET 接口正常，确保能拿到用户名）
         left = stillUnresolved.filter((id) => !tenantMap[id]);
         if (left.length > 0) {
           console.log('[FeishuBitable.getUserNamesBatch] batch失败，改用逐条API:', left);
@@ -1076,6 +1183,24 @@ class FeishuBitable {
     }
 
     return profileMap;
+  }
+
+  /** 获取单个用户完整名片（单条 contact/v3/users/:id，含 email/mobile/description 等；basic_batch 仅返回 name） */
+  async getUserProfileById(openId: string): Promise<UserProfile | null> {
+    if (!openId) return null;
+    const tt = await this.getTenantAccessToken();
+    if (!tt) return null;
+    try {
+      const res = await fetch(
+        `https://open.feishu.cn/open-apis/contact/v3/users/${openId}?user_id_type=open_id`,
+        { method: 'GET', headers: { Authorization: `Bearer ${tt}` } },
+      );
+      const json = parseFeishuJson(await res.text());
+      if (!json || json.code !== 0 || !json.data?.user) return null;
+      return this.extractUserProfile(json.data.user as Record<string, unknown>, 'open_id')?.profile ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /** 列出所有多维表格（委托给 listDriveFiles） */
@@ -1127,81 +1252,148 @@ class FeishuBitable {
   }
 
   /**
-   * 导出整个多维表格为 xlsx / csv（基于 drive 的异步导出任务）。
-   * 多维表格本身没有独立导出接口，需走云文档导出任务：
-   *   ① drive.exportTask.create 创建任务 → 拿到 ticket
-   *   ② 轮询 drive.exportTask.get 直到 job_status=1（完成）/2（失败）
-   *   ③ drive.exportTask.download 用返回的 file_token 下载文件流
-   * @param appToken 多维表格的 app_token（即其 drive file_token）
+   * 导出整个多维表格为 xlsx / csv。
+   *
+   * 飞书 drive.export_task 对「经 bitable:app 接口访问的 base」无法作为 drive 文件导出
+   * （任务会秒失败且 result 全空），因此这里改为直接读取所有数据表与记录，在内存中拼装文件。
+   * 复用已经稳定的 listTables / listFields / listRecords（应用身份），不依赖 drive 导出。
+   *
+   * @param appToken 多维表格的 app_token
    * @param format 'xlsx' | 'csv'
    */
   async exportBitable(
     appToken: string,
     format: 'xlsx' | 'csv' = 'xlsx',
     userAccessToken?: string | null,
+    tableId?: string | null,
+    appName?: string | null,
   ): Promise<{ buffer: Buffer; fileName: string; fileExtension: string }> {
-    console.log('[FeishuBitable.exportBitable] appToken=%s format=%s', appToken, format);
+    console.log('[FeishuBitable.exportBitable] appToken=%s format=%s tableId=%s (records-based)',
+      appToken, format, tableId ?? '(全部表)');
 
-    const opts = this.sdkOptions(userAccessToken);
+    // ① 收集数据表（分页）。若指定 tableId 则只保留该表。
+    const tables: { table_id: string; name: string }[] = [];
+    let tblToken = '';
+    do {
+      const t = await this.listTables(appToken, 100, tblToken, userAccessToken);
+      tables.push(...t.items.map((x) => ({ table_id: x.table_id, name: x.name || x.table_id })));
+      tblToken = t.has_more ? t.page_token : '';
+    } while (tblToken);
 
-    // ① 创建导出任务
-    const createRes = await this.client.drive.exportTask.create({
-      data: {
-        file_extension: format,
-        token: appToken,
-        type: 'bitable',
-      } as any,
-    }, opts);
-    if (createRes.code !== 0) {
-      throwFeishuError('创建导出任务失败', createRes.code, createRes.msg);
+    const targetTables = tableId
+      ? tables.filter((t) => t.table_id === tableId)
+      : tables;
+    if (targetTables.length === 0) {
+      throw new Error(tableId ? '未找到指定的数据表，无法导出' : '该多维表格没有任何数据表，无法导出');
     }
-    const ticket = createRes.data?.ticket;
-    if (!ticket) throw new Error('导出任务未返回 ticket');
 
-    // ② 轮询任务结果（最多 ~30s）
-    let fileToken: string | undefined;
-    let fileName: string | undefined;
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const getRes = await this.client.drive.exportTask.get({
-        path: { ticket },
-        params: { token: appToken },
-      }, opts);
-      if (getRes.code !== 0) {
-        throwFeishuError('查询导出任务失败', getRes.code, getRes.msg);
+    // ② 逐表读取字段定义与全部记录
+    const sheets: { name: string; headers: string[]; rows: string[][] }[] = [];
+    // 汇总所有字段的「选项 id → 显示文字」映射，供公式/单选返回 optxxx 时还原为可读文字
+    const globalOptionMap: Record<string, string> = {};
+    for (const tbl of targetTables) {
+      const fields = await this.listFields(appToken, tbl.table_id, 100, '', userAccessToken);
+      for (const f of fields) {
+        if (f.options) for (const o of f.options) globalOptionMap[o.id] = o.text;
       }
-      const result = getRes.data?.result;
-      const status = result?.job_status;
-      if (status === 1) {
-        fileToken = result?.file_token;
-        fileName = result?.file_name;
-        break;
-      }
-      if (status === 2) {
-        throw new Error(`导出失败：${result?.job_error_msg || '未知错误'}`);
-      }
-      // status === 0 → 处理中，继续轮询
+      const headers = fields.map((f) => f.name || f.field_id);
+
+      const rows: string[][] = [];
+      let recToken = '';
+      do {
+        const r = await this.listRecords(appToken, tbl.table_id, 100, recToken, userAccessToken, true);
+        for (const rec of r.records) {
+          rows.push(fields.map((f) => formatFieldValue((rec.fields || {})[f.name], f.type, { optionMap: globalOptionMap })));
+        }
+        recToken = r.has_more ? r.page_token : '';
+      } while (recToken);
+
+      sheets.push({ name: tbl.name, headers, rows });
+      console.log('[FeishuBitable.exportBitable] 表=%s 字段=%d 记录=%d', tbl.name, headers.length, rows.length);
     }
-    if (!fileToken) throw new Error('导出超时，请稍后重试');
 
-    // ③ 下载导出文件
-    const dl = await this.client.drive.exportTask.download({
-      path: { file_token: fileToken },
-    }, opts);
-    const stream = dl.getReadableStream();
-    const buffer = await new Promise<Buffer>((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      stream.on('data', (c: Buffer) => chunks.push(Buffer.from(c)));
-      stream.on('end', () => resolve(Buffer.concat(chunks)));
-      stream.on('error', reject);
-    });
+    // 优先用服务端向飞书取到的「真实多维表格名」（保留【】等原字符，
+    // 不依赖前端传入的 selectedApp.name 是否陈旧/是否被 drive 名覆盖）。取不到时回退前端传入的 appName。
+    let effectiveAppName: string | undefined = appName ?? undefined;
+    try {
+      const real = await this.getBitableAppName(appToken, userAccessToken);
+      if (real) effectiveAppName = real;
+    } catch {
+      /* 忽略，使用前端传入的 appName 兜底 */
+    }
+    console.log('[FeishuBitable.exportBitable] appName(前端)=%s effectiveAppName=%s',
+      appName ?? '(空)', effectiveAppName ?? '(空)');
 
+    const stamp = formatStamp(new Date());
+    // 拼好后把连续的多个下划线收成单个，避免飞书原名里的 __ / ___ 叠加分隔符后变得难看
+    const baseName = (
+      targetTables.length === 1
+        ? `${sanitizeFileName(effectiveAppName ?? '') || '多维表格'}_${sanitizeSheetName(targetTables[0].name) || targetTables[0].table_id}_${stamp}`
+        : `多维表格导出_${appToken.slice(-6)}_${stamp}`
+    ).replace(/_+/g, '_');
+
+    // ③ CSV：原生拼装（多表时每张表前加一行表名注释）
+    if (format === 'csv') {
+      const csv = sheets
+        .map((s) => {
+          const title = s.name ? `# ${s.name}` : '';
+          const head = s.headers.map(csvEscape).join(',');
+          const body = s.rows.map((row) => row.map(csvEscape).join(',')).join('\n');
+          return [title, head, body].filter((x) => x !== '').join('\n');
+        })
+        .join('\n\n');
+      // 带 BOM，Excel 才能正确识别 UTF-8 中文
+      return {
+        buffer: Buffer.from('﻿' + csv, 'utf-8'),
+        fileName: `${baseName}.csv`,
+        fileExtension: 'csv',
+      };
+    }
+
+    // ④ XLSX：动态引入 exceljs，每张表一个 worksheet
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    for (const s of sheets) {
+      const ws = wb.addWorksheet(sanitizeSheetName(s.name) || 'Sheet1');
+      ws.addRow(s.headers);
+      for (const row of s.rows) ws.addRow(row);
+      if (s.headers.length) {
+        const headerRow = ws.getRow(1);
+        headerRow.font = { bold: true };
+        headerRow.alignment = { vertical: 'middle' };
+      }
+    }
+    const arr = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
+    const buffer = Buffer.isBuffer(arr) ? arr : Buffer.from(arr);
     return {
       buffer,
-      fileName: fileName || `bitable_export.${format}`,
-      fileExtension: format,
+      fileName: `${baseName}.xlsx`,
+      fileExtension: 'xlsx',
     };
+  }
+
+  /**
+   * 用 appToken 向飞书取多维表格的真实名字（保留【】等原字符）。
+   * 失败返回 null，由调用方回退到前端传入的名字。
+   */
+  private async getBitableAppName(
+    appToken: string,
+    userAccessToken?: string | null,
+  ): Promise<string | null> {
+    try {
+      const res: any = await (this.client as any).bitable.app.get(
+        { path: { app_token: appToken } },
+        this.sdkOptions(userAccessToken),
+      );
+      if (res?.code === 0 && res?.data?.app?.name) {
+        return String(res.data.app.name);
+      }
+      console.warn('[FeishuBitable.getBitableAppName] 未返回 name:', JSON.stringify(res)?.slice(0, 200));
+      return null;
+    } catch (err) {
+      console.warn('[FeishuBitable.getBitableAppName] 获取失败，回退前端名字:', err);
+      return null;
+    }
   }
 
   // ====== IM 消息 API ======
@@ -1307,6 +1499,36 @@ class FeishuBitable {
     }
     return null;
   }
+}
+
+// ====== 导出辅助函数 ======
+
+// 字段值格式化逻辑已抽取到 @/lib/field-format，前端与导出共享同一套规则（见文件顶部 import）。
+
+/** CSV 字段转义（逗号/引号/换行用双引号包裹，内部引号翻倍） */
+function csvEscape(s: string): string {
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+/** Excel 工作表名：最长 31 字符，且不能含 : \ / ? * [ ] */
+function sanitizeSheetName(name: string): string {
+  const normalized = (name || '').replace(/＿/g, '_'); // 全角下划线 → 半角
+  const cleaned = normalized.replace(/[:\\/?*[\]]/g, '_').replace(/\s+/g, '').trim() || 'Sheet1';
+  return cleaned.length > 31 ? cleaned.slice(0, 31) : cleaned;
+}
+
+/** 文件名清洗：全角下划线转半角，并去除 Windows/通用非法字符（\ / : * ? " < > |），首尾空白去除 */
+function sanitizeFileName(name: string): string {
+  const normalized = (name || '').replace(/＿/g, '_'); // 全角下划线 → 半角
+  // 去掉空格等空白字符，避免文件名出现「AI记账【2026年】 识图版」这种中间带空格的情况
+  return normalized.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '').trim();
+}
+
+/** 时间戳：yyyymmddhhmmss（本地时间） */
+function formatStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
 // ====== 单例导出 ======

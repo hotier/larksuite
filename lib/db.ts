@@ -39,19 +39,27 @@ export async function healthCheck(): Promise<boolean> {
  * 每个迁移版本是一个独立步骤，通过 schema_migrations 表追踪已执行的版本。
  * 新增迁移只需在高位追加步骤 + 更新 LATEST_VERSION。
  */
-const LATEST_VERSION = 5;
+const LATEST_VERSION = 6;
 
 /**
  * 惰性迁移 — 仅在「已应用版本 < LATEST_VERSION」时执行（Vercel serverless 每次冷启动重置）。
  * 改用版本号而非布尔量，确保 LATEST_VERSION 升级后（即便模块被 HMR 缓存）也能重新跑迁移。
  */
 let appliedVersion = 0;
+let lastFailureAt = 0;
+// 迁移失败后的重试冷却期：避免每个请求都去尝试连接一个不可达的 DB
+// （每次约 10s 超时）。冷却期内直接跳过，DB 恢复后会在冷却结束后自动重试一次。
+const MIGRATION_RETRY_COOLDOWN = 5 * 60 * 1000;
+
 export async function ensureMigrations(): Promise<void> {
   if (appliedVersion >= LATEST_VERSION) return;
+  // 上次迁移失败且在冷却期内：直接跳过，避免「每次 API 请求都卡 10s」
+  if (lastFailureAt && Date.now() - lastFailureAt < MIGRATION_RETRY_COOLDOWN) return;
   try {
     await runMigrations();
     appliedVersion = LATEST_VERSION;
   } catch (err: any) {
+    lastFailureAt = Date.now();
     console.warn('[db] 数据库迁移失败（DB 未配置或连接异常）:', err?.message || String(err));
     // 不阻塞业务——迁移失败不影响 API 代理等核心功能
   }
@@ -190,5 +198,21 @@ export async function runMigrations(): Promise<void> {
       VALUES (5, ${new Date().toISOString()})
     `;
     console.log('[db] V5 迁移完成（executions.trigger_kind / trigger_detail）');
+  }
+
+  // ── V6: 工作流删除墓碑（跨设备删除传播，避免整组覆盖互删） ──
+  if (currentVersion < 6) {
+    await s`
+      CREATE TABLE IF NOT EXISTS workflow_tombstones (
+        id          TEXT PRIMARY KEY,
+        deleted_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `;
+
+    await s`
+      INSERT INTO schema_migrations (version, applied_at)
+      VALUES (6, ${new Date().toISOString()})
+    `;
+    console.log('[db] V6 迁移完成（workflow_tombstones 表）');
   }
 }

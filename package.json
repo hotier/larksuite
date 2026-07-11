@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "node --max-old-space-size=4096 ./node_modules/next/dist/bin/next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -13,6 +13,7 @@
     "@larksuiteoapi/node-sdk": "^1.67.0",
     "@neondatabase/serverless": "^1.1.0",
     "@xyflow/react": "^12.11.1",
+    "exceljs": "^4.4.0",
     "lucide-react": "^1.18.0",
     "next": "16.2.9",
     "react": "19.2.4",

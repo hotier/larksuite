@@ -56,6 +56,7 @@ export async function POST(request: NextRequest) {
       folderToken,
       appName,
       force,
+      openId,
     } = body;
     // 强制同步：true 时绕过服务端缓存，直接重新拉取飞书数据
     const forceRefresh = force === true || force === 'true';
@@ -78,17 +79,17 @@ export async function POST(request: NextRequest) {
     /* 检查认证状态（exchangeAuthCode 现等同于 authStatus，向后兼容） */
     if (action === 'exchangeAuthCode' || action === 'authStatus') {
       const { accessToken, expire } = getTokenFromCookies(request);
+      // 会话（Cookie）为登录权威来源：存在且未过期即视为已登录。
+      // ensureAuth() 仅用于在判定前「尽力」恢复/刷新服务端飞书 token
+      // （冷启动从 DB 兜底），其失败（如 DB 不可用）只代表暂时无法恢复
+      // 飞书 token，不应据此把有效会话判为未登录。
       const sessionValid = accessToken !== null && Date.now() < expire;
-      // 会话有效即视为已登录；服务端飞书 token 由 ensureAuth() 兜底维护/刷新
-      let authed = sessionValid;
-      if (authed) {
-        try {
-          authed = await bitableService.ensureAuth();
-        } catch {
-          authed = false;
-        }
+      if (sessionValid) {
+        bitableService.ensureAuth().catch(() => {
+          /* 忽略：DB 不可达时仅暂时无法恢复飞书 token，不影响会话有效性 */
+        });
       }
-      return NextResponse.json({ success: true, data: { authenticated: authed } });
+      return NextResponse.json({ success: true, data: { authenticated: sessionValid } });
     }
 
     /* 登出 */
@@ -139,6 +140,13 @@ export async function POST(request: NextRequest) {
         result = await bitableService.createApp(appName, folderToken, uaToken);
         cacheDelByPrefix('apps:');
         break;
+
+      // ====== 单用户完整名片（卡片懒加载用） ======
+      case 'getUserProfile': {
+        if (!openId) throw new Error('缺少参数: openId');
+        result = await bitableService.getUserProfileById(openId);
+        break;
+      }
 
       // ====== 云文档 ======
       case 'listDocs':

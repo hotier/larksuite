@@ -50,20 +50,20 @@ export async function loadWorkflowSummaries(): Promise<WorkflowSummary[]> {
 }
 
 /**
- * 保存所有工作流（全量同步）
+ * 保存工作流（本地优先的增量同步）
  *
- * 使用 UPSERT 而非 DELETE+INSERT：
- * - 先做 INSERT … ON CONFLICT DO UPDATE，已有数据不会被删除
- * - 再清理不在当前列表中的残留记录（best-effort）
+ * 设计原则（区别于「整组覆盖」）：
+ * - 只 UPSERT 客户端传来的工作流，绝不主动删除服务端其他记录，
+ *   避免「设备 A 保存时把设备 B 刚建的工作流误删」的跨设备互删问题。
+ * - 删除由客户端显式通过 `deletedIds` 传递，并对每个被删 id 写入
+ *   `workflow_tombstones` 墓碑表，使删除能跨设备传播（其他设备对账时剔除）。
  *
- * 相比旧版 DELETE→INSERT 的优势：
- * - 即使客户端中途崩溃，已有工作流不丢失
- * - 每条 UPSERT 是幂等的
+ * 每条 UPSERT 幂等，单条失败不影响已有数据。
  */
-export async function saveWorkflows(workflows: Workflow[]): Promise<void> {
+export async function saveWorkflows(workflows: Workflow[], deletedIds: string[] = []): Promise<void> {
   const s = sql();
 
-  // Step 1: UPSERT 每条工作流（幂等，失败不影响已有数据）
+  // Step 1: UPSERT 每条工作流（幂等，不触碰未传来的记录）
   for (const w of workflows) {
     await s`
       INSERT INTO workflows (id, name, nodes, status, created_at, updated_at)
@@ -83,19 +83,27 @@ export async function saveWorkflows(workflows: Workflow[]): Promise<void> {
     `;
   }
 
-  // Step 2: 清理不再属于当前列表的工作流（用户删除的工作流）
-  if (workflows.length > 0) {
-    const keepIds = new Set(workflows.map((w) => w.id));
-    const existing = await s`SELECT id FROM workflows`;
-    const staleIds = existing
-      .map((r) => r.id as string)
-      .filter((id) => !keepIds.has(id));
+  // Step 2: 仅删除客户端显式标记的 id（来自删除操作），并写入墓碑
+  for (const id of deletedIds) {
+    await s`DELETE FROM workflows WHERE id = ${id}`;
+    await s`
+      INSERT INTO workflow_tombstones (id, deleted_at)
+      VALUES (${id}, now())
+      ON CONFLICT (id) DO UPDATE SET deleted_at = now()
+    `;
+  }
+}
 
-    for (const id of staleIds) {
-      await s`DELETE FROM workflows WHERE id = ${id}`;
-    }
-  } else {
-    await s`DELETE FROM workflows`;
+/**
+ * 读取墓碑表（被其他设备删除的工作流 id 集合），
+ * 供客户端对账时剔除本地残存记录，实现跨设备删除传播。
+ */
+export async function loadDeletedIds(): Promise<string[]> {
+  try {
+    const rows = await sql()`SELECT id FROM workflow_tombstones`;
+    return rows.map((r) => r.id as string);
+  } catch {
+    return [];
   }
 }
 

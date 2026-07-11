@@ -12,23 +12,15 @@ import OAuthLogin from '@/app/components/OAuthLogin';
 import WorkflowCanvas from '@/app/components/workflow-editor/WorkflowCanvas';
 
 import Toast from '@/app/components/Toast';
+import LoadingScreen from '@/app/components/LoadingScreen';
+import { useRouteTransition } from '@/app/components/RouteTransition';
 import { useWorkflowEditorStore } from '@/lib/workflow-engine/editor-store';
 import { GuardedLink, useNavigationGuard } from '@/app/components/NavigationGuard';
-
-const STORAGE_KEY = 'bitable_workflows';
-
-function loadWorkflowsFromStorage(): Workflow[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function saveWorkflowsToStorage(workflows: Workflow[]) {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(workflows));
-}
+import {
+  loadLocalWorkflows,
+  saveLocalWorkflows,
+  fetchServerWorkflows,
+} from '@/lib/workflow-sync';
 
 export default function WorkflowDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -57,7 +49,12 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
     return () => window.removeEventListener('app:toast', handler);
   }, [addToast]);
 
-  useEffect(() => { setIsAuthenticated(true); }, []);
+  const { endTransition } = useRouteTransition();
+
+  useEffect(() => {
+    setIsAuthenticated(true);
+    endTransition(); // 结束从首页进入的过渡动画
+  }, []);
 
   useEffect(() => {
     if (isAuthenticated && apps.length === 0) {
@@ -70,12 +67,16 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
 
   // 加载目标工作流
   useEffect(() => {
-    const stored = loadWorkflowsFromStorage();
+    const stored = loadLocalWorkflows();
     const found = stored.find((w) => w.id === id);
     if (found) { setWorkflow(found); return; }
 
-    fetch('/api/workflows').then((r) => r.json())
-      .then((data) => setWorkflow((data.workflows as Workflow[])?.find((w) => w.id === id) || null))
+    // 本地缺失时从服务端全量拉取（含 nodes）；若已被其他设备删除则不复活
+    fetchServerWorkflows()
+      .then(({ workflows, deletedIds }) => {
+        if (deletedIds.includes(id)) { setWorkflow(null); return; }
+        setWorkflow(workflows.find((w) => w.id === id) || null);
+      })
       .catch(() => setWorkflow(null));
   }, [id]);
 
@@ -96,11 +97,12 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
   }, []);
 
   const handleSave = useCallback(async (wf: Workflow) => {
-    const existing = loadWorkflowsFromStorage();
+    const existing = loadLocalWorkflows();
     const idx = existing.findIndex((w) => w.id === wf.id);
     if (idx >= 0) { existing[idx] = wf; } else { existing.push(wf); }
-    saveWorkflowsToStorage(existing);
+    saveLocalWorkflows(existing);
 
+    // 增量上行（不含 deletedIds：保存不触发删除）
     await fetch('/api/workflows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -122,7 +124,7 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
   // 将「恢复未更改状态」逻辑注册给导航守卫，供弹窗「取消」时调用
   useEffect(() => {
     registerDiscardHandler(() => {
-      const stored = loadWorkflowsFromStorage();
+      const stored = loadLocalWorkflows();
       const found = stored.find((w) => w.id === id);
       if (found) useWorkflowEditorStore.getState().setWorkflow(found);
     });
@@ -160,7 +162,7 @@ export default function WorkflowDetailPage({ params }: { params: Promise<{ id: s
 
       <div className="flex-1 min-h-0 flex flex-col">
         {workflow === undefined ? (
-          <div className="flex items-center justify-center h-full text-neutral-400">加载中...</div>
+          <LoadingScreen accent="emerald" fullScreen={false} label="Lark Workspace" />
         ) : workflow === null ? (
           <div className="flex flex-col items-center justify-center h-full text-neutral-400">
             <svg className="w-16 h-16 mb-4 text-neutral-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>

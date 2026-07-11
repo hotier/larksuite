@@ -21,19 +21,37 @@ import type {
   OAuthUrlData,
   Table,
   FieldType,
+  UserProfile,
 } from '@/types';
+
+import { clientCacheGet, clientCacheSet, clientCacheDel, clientCacheClearAll } from '@/lib/clientCache';
 
 const API_URL = '/api/bitable';
 
+/** 浏览器本地缓存（三层第一层）统一 TTL：30 分钟 */
+const LS_TTL = 30 * 60 * 1000;
+
 /**
- * 导出整个多维表格为 Excel/CSV 并触发浏览器下载。
+ * 导出多维表格（或全部数据表）为 Excel/CSV 并触发浏览器下载。
  * 调用 /api/bitable/export 拿到文件流，按响应头中的文件名落地。
+ * @param tableId 可选；传入则只导出该数据表，不传则导出全部数据表。
+ * @param appName 可选；多维表格名，用于生成「多维表格名_数据表名」文件名。
  */
-export async function exportBitable(appToken: string, format: 'xlsx' | 'csv' = 'xlsx'): Promise<void> {
+export async function exportBitable(
+  appToken: string,
+  format: 'xlsx' | 'csv' = 'xlsx',
+  tableId?: string,
+  appName?: string,
+): Promise<void> {
   const res = await fetch('/api/bitable/export', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ appToken, format }),
+    body: JSON.stringify({
+      appToken,
+      format,
+      ...(tableId ? { tableId } : {}),
+      ...(appName ? { appName } : {}),
+    }),
     credentials: 'include',
   });
 
@@ -106,6 +124,16 @@ async function request<T>(body: Record<string, unknown>): Promise<T> {
   return result.data;
 }
 
+// ====== 后台静默刷新（SWR）：命中缓存即返回，再异步从服务端对齐并写回 ======
+// 节流：同一 key 15s 内只触发一次，避免频繁导航造成请求风暴。
+const bgRefreshAt = new Map<string, number>();
+function scheduleBgRefresh(key: string, run: () => Promise<void>): void {
+  const last = bgRefreshAt.get(key) ?? 0;
+  if (Date.now() - last < 15_000) return;
+  bgRefreshAt.set(key, Date.now());
+  run().catch(() => { /* 后台刷新失败不影响主流程 */ });
+}
+
 // ====== OAuth 授权 ======
 
 /** 获取飞书 OAuth 授权 URL */
@@ -114,28 +142,81 @@ export async function fetchOAuthUrl(): Promise<string> {
   return data.url;
 }
 
-/**
- * 检查认证状态（直接读取 Cookie，不再需要额外交换步骤）
- * Token 已在 OAuth 回调时直接写入 HttpOnly Cookie
- */
-export async function exchangeAuthCode(): Promise<boolean> {
-  return checkAuthStatus();
+// ====== 认证状态：三层缓存（① 浏览器 localStorage → ② 会话内存 → ③ 服务端/ Cookie） ======
+// 第一层 localStorage 跨刷新持久，命中即瞬时返回，彻底消除刷新时的网络等待。
+const AUTH_LS_KEY = 'authStatus';
+const AUTH_LS_TTL = 30 * 24 * 60 * 60 * 1000; // 30 天，与 Cookie 会话寿命一致
+
+// 第二层：会话内内存缓存（瞬时二次命中，避免同一会话内重复解析）
+let authStatusCache: { authenticated: boolean; ts: number } | null = null;
+const AUTH_STATUS_TTL = 2 * 60 * 1000;
+
+// 失效代际：每次 invalidateAuthCache（登出/重新授权）自增。
+// 用于防止「后台静默对齐」的过期请求在登出后把 L1 重新写成已登录（竞态）。
+let authGeneration = 0;
+
+/** 清除认证状态缓存（登出或 OAuth 重新授权后调用） */
+export function invalidateAuthCache() {
+  authStatusCache = null;
+  clientCacheDel(AUTH_LS_KEY);
+  authGeneration++;
 }
 
-/** 检查当前认证状态 */
-export async function checkAuthStatus(): Promise<boolean> {
+/**
+ * 检查认证状态（三级缓存）。
+ * ① 浏览器 localStorage 命中 → 瞬时返回，并后台静默与服务端对齐（若会话已失效则更新本地缓存）；
+ * ② 会话内存命中 → 直接返回；
+ * ③ 均未命中 → 请求服务端校验 Cookie（会话权威来源），结果写回本地与内存。
+ */
+export async function checkAuthStatus(force = false): Promise<boolean> {
+  // 第一层：浏览器本地（跨刷新持久）
+  const ls = force ? null : clientCacheGet<{ authenticated: boolean }>(AUTH_LS_KEY);
+  if (ls) {
+    // 后台静默对齐：不影响本次瞬时返回；若服务端判定会话已失效，
+    // 则把本地缓存更新为 false，保证后续读取一致。
+    // 用代际（gen）防止登出后过期的后台请求把 L1 复活为已登录。
+    const gen = authGeneration;
+    request<{ authenticated: boolean }>({ action: 'authStatus' })
+      .then((d) => {
+        if (gen === authGeneration) {
+          clientCacheSet(AUTH_LS_KEY, { authenticated: d.authenticated }, AUTH_LS_TTL);
+        }
+      })
+      .catch(() => { /* 网络异常：保持本地缓存不变 */ });
+    return ls.authenticated;
+  }
+  // 第二层：会话内内存
+  if (!force && authStatusCache && Date.now() - authStatusCache.ts < AUTH_STATUS_TTL) {
+    return authStatusCache.authenticated;
+  }
+  // 第三层：服务端校验（Cookie / 飞书）
   try {
     const data = await request<{ authenticated: boolean }>({ action: 'authStatus' });
+    clientCacheSet(AUTH_LS_KEY, { authenticated: data.authenticated }, AUTH_LS_TTL);
+    authStatusCache = { authenticated: data.authenticated, ts: Date.now() };
     return data.authenticated;
   } catch {
     return false;
   }
 }
 
-/** 登出 — 清除 HttpOnly Cookie + 服务端 token */
+/**
+ * 检查认证状态（OAuth 回调后使用）。
+ * 重新授权后强制刷新缓存，读取新写入的 Cookie。
+ */
+export async function exchangeAuthCode(): Promise<boolean> {
+  invalidateAuthCache();
+  return checkAuthStatus(true);
+}
+
+/** 登出 — 清除 HttpOnly Cookie + 服务端 token，并失效全部本地/内存缓存 */
 export async function logout(): Promise<void> {
   await request<{ ok: boolean }>({ action: 'logout' });
   invalidateAppsCache();
+  invalidateDocsCache();
+  invalidateSheetsCache();
+  invalidateAuthCache();
+  clientCacheClearAll();
 }
 
 // ====== 多维表格应用 (Apps) ======
@@ -145,14 +226,34 @@ export interface ListAppsResult {
   fromCache: boolean;
 }
 
-/** 获取所有多维表格应用列表（带模块级缓存，会话内有效、无明确过期） */
+/** 获取所有多维表格应用列表（三级缓存：① 浏览器本地 → ② 会话内存 → ③ 服务端/飞书） */
 export async function listApps(force = false): Promise<ListAppsResult> {
+  // 第一层：浏览器本地（跨刷新持久）
+  if (!force) {
+    const ls = clientCacheGet<ListAppsData>('apps');
+    if (ls) {
+      // SWR：命中即返回，后台静默对齐并写回
+      scheduleBgRefresh('apps', refreshAppsLocal);
+      return { data: ls, fromCache: true };
+    }
+  }
+  // 第二层：会话内内存
   if (!force && appsCache) {
+    scheduleBgRefresh('apps', refreshAppsLocal);
     return { data: appsCache.data, fromCache: true };
   }
+  // 第三层：服务端 / 飞书
   const data = await request<ListAppsData>({ action: 'listApps', force });
   appsCache = { data, timestamp: Date.now() };
+  clientCacheSet('apps', data, LS_TTL);
   return { data, fromCache: false };
+}
+
+/** 后台静默重新拉取并写回 apps 的本地+内存缓存（SWR 用） */
+async function refreshAppsLocal(): Promise<void> {
+  const d = await request<ListAppsData>({ action: 'listApps', force: false });
+  appsCache = { data: d, timestamp: Date.now() };
+  clientCacheSet('apps', d, LS_TTL);
 }
 
 /** 强制刷新应用列表（跳过缓存，并绕过服务端缓存重新拉取飞书数据） */
@@ -161,9 +262,12 @@ export async function refreshApps(force = true): Promise<ListAppsResult> {
   return listApps(force);
 }
 
-/** 创建新的多维表格应用 */
+/** 创建新的多维表格应用（写入后失效客户端缓存，避免读到旧列表） */
 export async function createApp(name: string, folderToken?: string): Promise<App> {
-  return request<App>({ action: 'createApp', appName: name, folderToken });
+  const result = await request<App>({ action: 'createApp', appName: name, folderToken });
+  invalidateAppsCache();
+  clientCacheDel('apps');
+  return result;
 }
 
 // ====== 云文档 (Docx) ======
@@ -179,12 +283,34 @@ export function invalidateDocsCache(folderToken = ''): void {
 
 export async function listDocs(pageSize = 100, pageToken = '', folderToken = '', force = false): Promise<ListAppsData> {
   if (!force && pageToken === '') {
+    const lsKey = `docs:${folderToken}`;
+    // 第一层：浏览器本地（跨刷新持久）
+    const ls = clientCacheGet<ListAppsData>(lsKey);
+    if (ls) {
+      scheduleBgRefresh(lsKey, () => refreshDocsLocal(folderToken, pageSize));
+      return ls;
+    }
+    // 第二层：会话内内存
     const cached = docsCache.get(folderToken);
-    if (cached) return cached.data;
+    if (cached) {
+      scheduleBgRefresh(lsKey, () => refreshDocsLocal(folderToken, pageSize));
+      return cached.data;
+    }
   }
+  // 第三层：服务端 / 飞书
   const data = await request<ListAppsData>({ action: 'listDocs', pageSize, pageToken, folderToken, force });
-  if (pageToken === '') docsCache.set(folderToken, { data, ts: Date.now() });
+  if (pageToken === '') {
+    docsCache.set(folderToken, { data, ts: Date.now() });
+    clientCacheSet(`docs:${folderToken}`, data, LS_TTL);
+  }
   return data;
+}
+
+/** 后台静默重新拉取并写回某 folder 的 docs 本地+内存缓存（SWR 用） */
+async function refreshDocsLocal(folderToken: string, pageSize: number): Promise<void> {
+  const d = await request<ListAppsData>({ action: 'listDocs', pageSize, pageToken: '', folderToken, force: false });
+  docsCache.set(folderToken, { data: d, ts: Date.now() });
+  clientCacheSet(`docs:${folderToken}`, d, LS_TTL);
 }
 
 /** 强制刷新云文档列表（绕过缓存重新拉取并更新缓存） */
@@ -193,8 +319,12 @@ export async function refreshDocs(folderToken = '', force = true): Promise<ListA
   return listDocs(100, '', folderToken, force);
 }
 
+/** 创建云文档（写入后失效客户端缓存） */
 export async function createDoc(title: string, folderToken?: string): Promise<App> {
-  return request<App>({ action: 'createDoc', appName: title, folderToken });
+  const result = await request<App>({ action: 'createDoc', appName: title, folderToken });
+  invalidateDocsCache(folderToken);
+  clientCacheDel(`docs:${folderToken}`);
+  return result;
 }
 
 // ====== 在线表格 (Sheet) ======
@@ -210,12 +340,34 @@ export function invalidateSheetsCache(folderToken = ''): void {
 
 export async function listSheets(pageSize = 100, pageToken = '', folderToken = '', force = false): Promise<ListAppsData> {
   if (!force && pageToken === '') {
+    const lsKey = `sheets:${folderToken}`;
+    // 第一层：浏览器本地（跨刷新持久）
+    const ls = clientCacheGet<ListAppsData>(lsKey);
+    if (ls) {
+      scheduleBgRefresh(lsKey, () => refreshSheetsLocal(folderToken, pageSize));
+      return ls;
+    }
+    // 第二层：会话内内存
     const cached = sheetsCache.get(folderToken);
-    if (cached) return cached.data;
+    if (cached) {
+      scheduleBgRefresh(lsKey, () => refreshSheetsLocal(folderToken, pageSize));
+      return cached.data;
+    }
   }
+  // 第三层：服务端 / 飞书
   const data = await request<ListAppsData>({ action: 'listSheets', pageSize, pageToken, folderToken, force });
-  if (pageToken === '') sheetsCache.set(folderToken, { data, ts: Date.now() });
+  if (pageToken === '') {
+    sheetsCache.set(folderToken, { data, ts: Date.now() });
+    clientCacheSet(`sheets:${folderToken}`, data, LS_TTL);
+  }
   return data;
+}
+
+/** 后台静默重新拉取并写回某 folder 的 sheets 本地+内存缓存（SWR 用） */
+async function refreshSheetsLocal(folderToken: string, pageSize: number): Promise<void> {
+  const d = await request<ListAppsData>({ action: 'listSheets', pageSize, pageToken: '', folderToken, force: false });
+  sheetsCache.set(folderToken, { data: d, ts: Date.now() });
+  clientCacheSet(`sheets:${folderToken}`, d, LS_TTL);
 }
 
 /** 强制刷新在线表格列表（绕过缓存重新拉取并更新缓存） */
@@ -224,14 +376,25 @@ export async function refreshSheets(folderToken = '', force = true): Promise<Lis
   return listSheets(100, '', folderToken, force);
 }
 
+/** 创建在线表格（写入后失效客户端缓存） */
 export async function createSheet(title: string, folderToken?: string): Promise<App> {
-  return request<App>({ action: 'createSheet', appName: title, folderToken });
+  const result = await request<App>({ action: 'createSheet', appName: title, folderToken });
+  invalidateSheetsCache(folderToken);
+  clientCacheDel(`sheets:${folderToken}`);
+  return result;
 }
 
 // ====== 文件删除（通用） ======
 
 export async function deleteFile(fileToken: string, fileType: string): Promise<void> {
   return request<void>({ action: 'deleteFile', fileToken, fileType });
+}
+
+// ====== 单用户完整名片（卡片懒加载） ======
+
+/** 打开用户名片时按需拉取完整资料（email/mobile/description 等） */
+export async function getUserProfile(openId: string): Promise<UserProfile> {
+  return request<UserProfile>({ action: 'getUserProfile', openId });
 }
 
 // ====== 数据表 (Tables) ======
@@ -275,35 +438,79 @@ export function invalidateTableCache(appToken: string, tableId?: string) {
 }
 
 export async function listTables(appToken: string, pageSize = 100, pageToken = '', force = false): Promise<ListTablesData> {
+  const lsKey = `tables:${appToken}`;
   const cached = tablesCache.get(appToken);
   if (!force && cached && Date.now() - cached.ts < TABLES_CACHE_TTL) {
+    scheduleBgRefresh(lsKey, () => refreshTablesLocal(appToken, pageSize));
     return cached.data;
   }
+  if (!force && pageToken === '') {
+    // 第一层：浏览器本地（跨刷新持久）
+    const ls = clientCacheGet<ListTablesData>(lsKey);
+    if (ls) {
+      tablesCache.set(appToken, { data: ls, ts: Date.now() });
+      scheduleBgRefresh(lsKey, () => refreshTablesLocal(appToken, pageSize));
+      return ls;
+    }
+  }
+  // 第三层：服务端 / 飞书
   const data = await request<ListTablesData>({ action: 'listTables', appToken, pageSize, pageToken, force });
   tablesCache.set(appToken, { data, ts: Date.now() });
+  clientCacheSet(lsKey, data, TABLES_CACHE_TTL);
   return data;
+}
+
+/** 后台静默重新拉取并写回 tables 本地+内存缓存（SWR 用） */
+async function refreshTablesLocal(appToken: string, pageSize: number): Promise<void> {
+  const d = await request<ListTablesData>({ action: 'listTables', appToken, pageSize, pageToken: '', force: false });
+  tablesCache.set(appToken, { data: d, ts: Date.now() });
+  clientCacheSet(`tables:${appToken}`, d, TABLES_CACHE_TTL);
 }
 
 export async function createTable(appToken: string, tableName: string, fields: { name: string; type: FieldType }[]): Promise<Table> {
   const result = await request<Table>({ action: 'createTable', appToken, tableName, fields });
   invalidateTableCache(appToken);
+  clientCacheDel(`tables:${appToken}`);
   return result;
 }
 
 export async function deleteTable(appToken: string, tableId: string): Promise<void> {
   await request<void>({ action: 'deleteTable', appToken, tableId });
   invalidateTableCache(appToken, tableId);
+  clientCacheDel(`tables:${appToken}`);
+  clientCacheDel(`fields:${appToken}:${tableId}`);
 }
 
 export async function listFields(appToken: string, tableId: string, pageSize = 100, pageToken = '', force = false): Promise<Field[]> {
   const key = `${appToken}:${tableId}`;
+  const lsKey = `fields:${key}`;
   const cached = fieldsCache.get(key);
   if (!force && cached && Date.now() - cached.ts < FIELDS_CACHE_TTL) {
+    scheduleBgRefresh(lsKey, () => refreshFieldsLocal(appToken, tableId, pageSize));
     return cached.data;
   }
+  if (!force && pageToken === '') {
+    // 第一层：浏览器本地（跨刷新持久）
+    const ls = clientCacheGet<Field[]>(lsKey);
+    if (ls) {
+      fieldsCache.set(key, { data: ls, ts: Date.now() });
+      scheduleBgRefresh(lsKey, () => refreshFieldsLocal(appToken, tableId, pageSize));
+      return ls;
+    }
+  }
+  // 第三层：服务端 / 飞书
   const data = await request<Field[]>({ action: 'listFields', appToken, tableId, pageSize, pageToken, force });
   fieldsCache.set(key, { data, ts: Date.now() });
+  clientCacheSet(lsKey, data, FIELDS_CACHE_TTL);
   return data;
+}
+
+/** 后台静默重新拉取并写回 fields 本地+内存缓存（SWR 用） */
+async function refreshFieldsLocal(appToken: string, tableId: string, pageSize: number): Promise<void> {
+  const key = `${appToken}:${tableId}`;
+  const d = await request<Field[]>({ action: 'listFields', appToken, tableId, pageSize, pageToken: '', force: false });
+  fieldsCache.set(key, { data: d, ts: Date.now() });
+  clientCacheSet(`fields:${key}`, d, FIELDS_CACHE_TTL);
 }
 
 // ====== 记录 (Records) ======
@@ -317,15 +524,21 @@ export async function readRecord(appToken: string, tableId: string, recordId: st
 }
 
 export async function createRecord(appToken: string, tableId: string, fields: Record<string, unknown>): Promise<BitableRecord> {
-  return request<BitableRecord>({ action: 'create', appToken, tableId, fields });
+  const result = await request<BitableRecord>({ action: 'create', appToken, tableId, fields });
+  invalidateRecordsCache(appToken, tableId); // 失效会话内全量记录缓存，下次读取重新拉
+  return result;
 }
 
 export async function updateRecord(appToken: string, tableId: string, recordId: string, fields: Record<string, unknown>): Promise<BitableRecord> {
-  return request<BitableRecord>({ action: 'update', appToken, tableId, recordId, fields });
+  const result = await request<BitableRecord>({ action: 'update', appToken, tableId, recordId, fields });
+  invalidateRecordsCache(appToken, tableId);
+  return result;
 }
 
 export async function deleteApiRecord(appToken: string, tableId: string, recordId: string): Promise<string> {
-  return request<string>({ action: 'delete', appToken, tableId, recordId });
+  const result = await request<string>({ action: 'delete', appToken, tableId, recordId });
+  invalidateRecordsCache(appToken, tableId);
+  return result;
 }
 
 /**

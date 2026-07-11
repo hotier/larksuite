@@ -30,12 +30,28 @@ export default function ThemeToggle() {
   const dark = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   const toggle = () => {
+    const root = document.documentElement;
     const next = !dark;
-    document.documentElement.classList.toggle('dark', next);
-    try {
-      localStorage.setItem('theme', next ? 'dark' : 'light');
-    } catch {
-      /* localStorage 不可用时忽略 */
+    const apply = () => {
+      root.classList.toggle('dark', next);
+      try {
+        localStorage.setItem('theme', next ? 'dark' : 'light');
+      } catch {
+        /* localStorage 不可用时忽略 */
+      }
+    };
+    // 优先用 View Transitions：整页交叉淡入，平滑且无「逐元素过渡」导致的抖动
+    // （多维表格等大数据页面、导航区/功能区反差边界尤其受益）。
+    // 不支持的浏览器回退到 html.theme-transition 逐元素过渡。
+    const doc = document as Document & {
+      startViewTransition?: (cb: () => void) => { finished: Promise<void> };
+    };
+    if (typeof doc.startViewTransition === 'function') {
+      doc.startViewTransition(apply);
+    } else {
+      root.classList.add('theme-transition');
+      apply();
+      window.setTimeout(() => root.classList.remove('theme-transition'), 450);
     }
   };
 

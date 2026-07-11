@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import RouteTransitionProvider from "./components/RouteTransition";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -35,7 +36,7 @@ export default function RootLayout({
               "(function(){try{var t=localStorage.getItem('theme');var d=t?t==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',d);}catch(e){}})();",
           }}
         />
-        {children}
+        <RouteTransitionProvider>{children}</RouteTransitionProvider>
       </body>
     </html>
   );

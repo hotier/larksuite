@@ -3,27 +3,20 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Workflow as WorkflowIcon, Plus, Trash2, Clock, Layers, Search } from 'lucide-react';
-import type { Workflow, WorkflowSummary } from '@/types';
+import type { Workflow } from '@/types';
 import { idGen } from '@/lib/workflow-engine/editor-store';
 import Toast from '@/app/components/Toast';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
 import TopBar from '@/app/components/TopBar';
+import LoadingScreen from '@/app/components/LoadingScreen';
+import { useRouteTransition } from '@/app/components/RouteTransition';
 import { logout as apiLogout } from '@/lib/api';
-
-const STORAGE_KEY = 'bitable_workflows';
-
-function loadWorkflowsFromStorage(): Workflow[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function saveWorkflowsToStorage(workflows: Workflow[]) {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(workflows));
-}
+import {
+  loadLocalWorkflows,
+  saveLocalWorkflows,
+  computeSync,
+  fetchServerWorkflows,
+} from '@/lib/workflow-sync';
 
 export default function FlowPage() {
   const router = useRouter();
@@ -44,86 +37,76 @@ export default function FlowPage() {
     setToasts((prev) => prev.filter((t) => t.id !== tid));
   }, []);
 
-  // 加载工作流
+  // 双向同步：从服务端拉取合并（pull），并把本地独有/较新的变更推回（push），
+  // 使数据库成为跨设备中枢（覆盖离线创建、上次 POST 静默失败等情况）。
+  // 基线直接读持久化的 localStorage（本页所有变更都会即时写回，故它即真相源），
+  // 避免依赖可能滞后的 React state，也规避 StrictMode 下的副作用重复。
+  const runSync = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent ?? true;
+    if (!silent) setAuthLoading(true);
+    try {
+      const { workflows: serverWfs, deletedIds } = await fetchServerWorkflows();
+      const local = loadLocalWorkflows();
+      const { merged, push } = computeSync(local, serverWfs, deletedIds);
+      if (push.length > 0) {
+        fetch('/api/workflows', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workflows: push }),
+        }).catch(() => {}); // 上行失败不阻塞，下次同步重试（UPSERT 幂等）
+      }
+      saveLocalWorkflows(merged);
+      setWorkflows(merged);
+      if (!silent) addToast('success', '已与服务端同步');
+    } catch {
+      if (!silent) addToast('error', '同步工作流失败');
+    } finally {
+      if (!silent) setAuthLoading(false);
+      setIsLoading(false);
+    }
+  }, [addToast]);
+
+  // 首次加载：先用本地瞬时渲染，再双向同步
   useEffect(() => {
-    const local = loadWorkflowsFromStorage();
+    const local = loadLocalWorkflows();
     if (local.length > 0) {
       setWorkflows(local);
       setIsLoading(false);
     }
+    runSync({ silent: true });
+  }, [runSync]);
 
-    // 从服务端同步（列表端点：轻量摘要，不含 nodes）
-    fetch('/api/workflows/list')
-      .then((r) => r.json())
-      .then((data) => {
-        const serverList = (data.workflows as WorkflowSummary[]) || [];
-        if (serverList.length === 0) return;
+  // 后台静默对账：标签页重新可见 / 窗口聚焦时，非阻塞地双向同步，
+  // 使其他设备/标签的改动反映到本视图，同时把本机本地变更推回数据库。
+  useEffect(() => {
+    let lastSync = 0;
+    const sync = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastSync < 10_000) return; // 节流，避免频繁导航造成请求风暴
+      lastSync = now;
+      runSync({ silent: true });
+    };
+    document.addEventListener('visibilitychange', sync);
+    window.addEventListener('focus', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      window.removeEventListener('focus', sync);
+    };
+  }, [runSync]);
 
-        // 合并：以 updatedAt 较新者为准，避免服务端陈旧数据覆盖本地刚保存的修改
-        const localMap = new Map(local.map((w) => [w.id, w]));
-        const merged: Workflow[] = serverList.map((s) => {
-          const l = localMap.get(s.id);
-          if (l && new Date(l.updatedAt).getTime() > new Date(s.updatedAt).getTime()) return l;
-          // server 较新：用摘要字段，nodes 回退到本地（若有）
-          return {
-            id: s.id,
-            name: s.name,
-            status: s.status,
-            createdAt: s.createdAt,
-            updatedAt: s.updatedAt,
-            nodes: l?.nodes ?? [],
-            nodeCount: s.nodeCount,
-          };
-        });
-        // 保留仅存在于本地的工作流
-        for (const w of local) {
-          if (!merged.some((m) => m.id === w.id)) merged.push(w);
-        }
-
-        setWorkflows(merged);
-        saveWorkflowsToStorage(merged);
-      })
-      .catch(() => {})
-      .finally(() => setIsLoading(false));
-  }, []);
+  const { endTransition } = useRouteTransition();
 
   // 认证状态（AuthGuard 已校验，这里仅用于渲染账户控件）
-  useEffect(() => { setIsAuthenticated(true); }, []);
+  useEffect(() => {
+    setIsAuthenticated(true);
+    endTransition(); // 结束从首页进入的过渡动画
+  }, []);
 
-  // 顶部「已连接飞书」按钮：从服务端重新同步工作流
-  const handleSync = useCallback(async () => {
-    setAuthLoading(true);
-    try {
-    const r = await fetch('/api/workflows/list');
-    const data = await r.json();
-    const serverList = (data.workflows as WorkflowSummary[]) || [];
-    setWorkflows((prev) => {
-      const localMap = new Map(prev.map((w) => [w.id, w]));
-      const merged: Workflow[] = serverList.map((s) => {
-        const l = localMap.get(s.id);
-        if (l && new Date(l.updatedAt).getTime() > new Date(s.updatedAt).getTime()) return l;
-        return {
-          id: s.id,
-          name: s.name,
-          status: s.status,
-          createdAt: s.createdAt,
-          updatedAt: s.updatedAt,
-          nodes: l?.nodes ?? [],
-          nodeCount: s.nodeCount,
-        };
-      });
-      for (const w of prev) {
-        if (!merged.some((m) => m.id === w.id)) merged.push(w);
-      }
-      saveWorkflowsToStorage(merged);
-      return merged;
-    });
-    } catch {
-      addToast('error', '同步工作流失败');
-    } finally {
-      setAuthLoading(false);
-    }
-  }, [addToast]);
+  // 顶部「已连接飞书」按钮：手动双向同步
+  const handleSync = useCallback(() => {
+    return runSync({ silent: false });
+  }, [runSync]);
 
   const handleLogout = useCallback(async () => {
     await apiLogout();
@@ -138,9 +121,9 @@ export default function FlowPage() {
 
     const updated = [newWf, ...workflows];
     setWorkflows(updated);
-    saveWorkflowsToStorage(updated);
+    saveLocalWorkflows(updated);
 
-    // 同步到服务端
+    // 同步到服务端（增量：只上行新增项，不触碰其他记录）
     fetch('/api/workflows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -160,12 +143,13 @@ export default function FlowPage() {
     if (!deleteConfirmId) return;
     const updated = workflows.filter((w) => w.id !== deleteConfirmId);
     setWorkflows(updated);
-    saveWorkflowsToStorage(updated);
+    saveLocalWorkflows(updated);
 
+    // 增量同步：上行剩余项，并显式标记被删 id（写入墓碑，跨设备传播）
     fetch('/api/workflows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workflows: updated }),
+      body: JSON.stringify({ workflows: updated, deletedIds: [deleteConfirmId] }),
     }).catch(() => {});
 
     setDeleteConfirmId(null);
@@ -185,7 +169,7 @@ export default function FlowPage() {
         : w,
     );
     setWorkflows(updated);
-    saveWorkflowsToStorage(updated);
+    saveLocalWorkflows(updated);
     fetch('/api/workflows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -220,7 +204,7 @@ export default function FlowPage() {
         onFetchApps={handleSync} onLogout={handleLogout}
       >
         <div className="flex items-center gap-3">
-          <WorkflowIcon className="w-5 h-5 text-violet-500" />
+          <WorkflowIcon className="w-5 h-5 text-emerald-500" />
           <h1 className="text-base font-semibold text-neutral-900">工作流</h1>
         </div>
       </TopBar>
@@ -239,7 +223,7 @@ export default function FlowPage() {
         </div>
         <button
           onClick={handleCreate}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg text-white transition-colors bg-violet-500 hover:bg-violet-600"
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg text-white transition-colors bg-emerald-500 hover:bg-emerald-600"
         >
           <Plus className="w-4 h-4" />
           新建工作流
@@ -249,7 +233,7 @@ export default function FlowPage() {
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-8">
         {isLoading ? (
-          <div className="flex items-center justify-center h-64 text-neutral-400 text-sm">加载中...</div>
+          <LoadingScreen accent="emerald" fullScreen={false} label="Lark Workspace" />
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 text-neutral-400">
             <WorkflowIcon className="w-12 h-12 mb-3 text-neutral-200" />

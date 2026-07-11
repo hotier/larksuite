@@ -1,23 +1,24 @@
 /**
- * POST /api/workflows — 前端同步工作流到服务端
- * GET  /api/workflows — 读取工作流列表（带内存缓存，写操作后自动失效）
+ * POST /api/workflows — 前端同步工作流到服务端（本地优先的增量同步）
+ * GET  /api/workflows — 读取工作流列表 + 墓碑（带内存缓存，写操作后自动失效）
  *
- * 前端每次持久化后调用此接口，将工作流写入数据库，
- * 供 webhook 接收端读取执行。
+ * 前端每次持久化后调用此接口，将工作流写入数据库，供 webhook 接收端读取执行。
+ * 删除通过 `deletedIds` 显式传递，避免整组覆盖误删其他设备的记录。
  */
 
 import { NextResponse } from 'next/server';
-import { saveWorkflows, loadWorkflows, WF_CACHE_KEY, WF_LIST_CACHE_KEY, WF_TTL } from '@/lib/workflow-store';
+import { saveWorkflows, loadWorkflows, loadDeletedIds, WF_CACHE_KEY, WF_LIST_CACHE_KEY, WF_TTL } from '@/lib/workflow-store';
 import { withCache, cacheDel } from '@/lib/cache';
 import { logger } from '@/lib/logger';
 
 export async function POST(request: Request) {
   try {
-    const { workflows } = await request.json();
+    const { workflows, deletedIds } = await request.json();
     if (!Array.isArray(workflows)) {
       return NextResponse.json({ error: '缺少参数: workflows' }, { status: 400 });
     }
-    await saveWorkflows(workflows);
+    const dels: string[] = Array.isArray(deletedIds) ? deletedIds : [];
+    await saveWorkflows(workflows, dels);
     // 写操作后立即失效缓存，确保下次读取（列表与节点）读到最新数据
     cacheDel(WF_CACHE_KEY);
     cacheDel(WF_LIST_CACHE_KEY);
@@ -31,12 +32,16 @@ export async function POST(request: Request) {
 
 export async function GET() {
   try {
-    const workflows = await withCache(
+    const { workflows, deletedIds } = await withCache(
       WF_CACHE_KEY,
-      () => loadWorkflows(),
+      async () => {
+        const wfs = await loadWorkflows();
+        const del = await loadDeletedIds();
+        return { workflows: wfs, deletedIds: del };
+      },
       WF_TTL,
     );
-    return NextResponse.json({ workflows });
+    return NextResponse.json({ workflows, deletedIds });
   } catch (error) {
     logger.error('[api/workflows] 读取失败:', error);
     const message = error instanceof Error ? error.message : '读取失败';

@@ -207,6 +207,25 @@ body {
   background-color: var(--surface);
 }
 
+/* 暗色下白色玻璃（带透明度变体 bg-white/NN）：上面的 .dark .bg-white 只覆盖精确类名，
+   命中不到 bg-white/80 等，会导致暗色下仍是刺眼半透明白块 + 浅色文字对比崩溃。
+   补上常用透明度变体，统一改用暗色 surface 玻璃。 */
+.dark .bg-white\/80 { background-color: rgba(28, 28, 28, 0.8); }
+.dark .bg-white\/70 { background-color: rgba(28, 28, 28, 0.7); }
+.dark .bg-white\/60 { background-color: rgba(28, 28, 28, 0.6); }
+.dark .bg-white\/50 { background-color: rgba(28, 28, 28, 0.5); }
+.dark .bg-white\/40 { background-color: rgba(28, 28, 28, 0.4); }
+
+/* 暗色下白色玻璃的边框（带透明度变体）改为暗色边框 */
+.dark .border-neutral-200\/70 { border-color: rgba(46, 46, 46, 0.7); }
+.dark .border-neutral-200\/60 { border-color: rgba(46, 46, 46, 0.6); }
+
+/* 暗色下中性骨架（带透明度变体）改为暗色 */
+.dark .bg-neutral-200\/60 { background-color: rgba(64, 64, 64, 0.6); }
+
+/* 暗色下浅色类别玻璃徽章（带透明度变体） */
+.dark .bg-emerald-50\/80 { background-color: rgba(16, 185, 129, 0.2); }
+
 /* 暗色下滚动条配色 */
 .dark ::-webkit-scrollbar-thumb { background: #3f3f3f; }
 .dark ::-webkit-scrollbar-thumb:hover { background: #525252; }
@@ -236,6 +255,7 @@ body {
 .dark .bg-yellow-50 { background-color: rgba(234,179,8,0.14); }
 .dark .bg-pink-50 { background-color: rgba(236,72,153,0.14); }
 .dark .bg-violet-50 { background-color: rgba(139,92,246,0.14); }
+.dark .bg-sky-50 { background-color: rgba(14,165,233,0.14); }
 .dark .bg-purple-50 { background-color: rgba(168,85,247,0.14); }
 .dark .bg-orange-50 { background-color: rgba(249,115,22,0.14); }
 .dark .bg-green-50\/50 { background-color: rgba(34,197,94,0.1); }
@@ -270,6 +290,7 @@ body {
 .dark .text-lime-600 { color: #bef264; }
 .dark .text-fuchsia-600 { color: #f0abfc; }
 .dark .text-indigo-600 { color: #a5b4fc; }
+.dark .text-sky-700, .dark .text-sky-600 { color: #7dd3fc; }
 
 /* 节点列表卡片边框（200 级）暗色适配 */
 .dark .border-blue-200 { border-color: rgba(59,130,246,0.3); }
@@ -290,3 +311,35 @@ body {
 .dark .bg-red-50 { background-color: rgba(239,68,68,0.14); }
 .dark .text-red-600 { color: #fca5a5; }
 .dark .border-red-200 { border-color: rgba(239,68,68,0.3); }
+
+/* ====== 主题切换平滑过渡 ======
+   仅在「一次切换期间」（html.theme-transition）为颜色类属性加上过渡，
+   平时不影响 hover / 入场动画等正常过渡。
+   注意：不要包含 transform —— 子页面有大量 spin/float/路由位移等
+   @keyframes 动画，transition 接管 transform 会与其冲突导致抖动。
+   transition-delay: 0s !important 用于覆盖首页卡片入场用的内联 delay，
+   避免切换主题时卡片颜色变化出现延迟。 */
+html.theme-transition,
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition: background-color 0.4s ease, border-color 0.4s ease, color 0.4s ease,
+    fill 0.4s ease, box-shadow 0.4s ease, outline-color 0.4s ease !important;
+  transition-delay: 0s !important;
+}
+
+/* 多维表格等密集数据表格：切换主题时其内部海量单元格/分隔线同时过渡会卡顿抖动，
+   故在切换期间对该区域直接禁用过渡（整块统一换色，硬切不突兀），保留页面外壳平滑。 */
+html.theme-transition .theme-no-transition,
+html.theme-transition .theme-no-transition * {
+  transition: none !important;
+}
+
+/* ====== View Transitions（主题切换主方案） ======
+   优先于上面的逐元素过渡：整页截图交叉淡入，平滑且无逐元素抖动。
+   仅微调时长/缓动，几何一致（同视口）故无 transform 动画。 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.28s;
+  animation-timing-function: ease;
+}

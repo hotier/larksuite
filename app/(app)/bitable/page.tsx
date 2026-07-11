@@ -16,6 +16,8 @@ import TableManager from '@/app/components/TableManager';
 import RecordManager, { getRecordFieldValue } from '@/app/components/RecordManager';
 import FieldSelector from '@/app/components/FieldSelector';
 import Toast from '@/app/components/Toast';
+import { TableListSkeleton, RecordListSkeleton } from '@/app/components/Skeletons';
+import { useRouteTransition } from '@/app/components/RouteTransition';
 
 type View = 'apps' | 'tables' | 'records';
 
@@ -131,8 +133,11 @@ export default function DashboardPage() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  const { endTransition } = useRouteTransition();
+
   useEffect(() => {
     setIsAuthenticated(true); // AuthGuard 已验证
+    endTransition(); // 结束从首页进入的过渡动画
   }, []);
 
   const withLoading = async (fn: () => Promise<void>, successMsg?: string, errorPrefix = '操作失败') => {
@@ -463,31 +468,44 @@ export default function DashboardPage() {
             {/* Tab content — 各组件自行管理滚动 */}
             <div className="flex-1 min-h-0 overflow-hidden p-6">
               {view === 'apps' && (
-                <AppGrid
-                  apps={apps} selectedApp={selectedApp}
-                  isAuthenticated={isAuthenticated} isCreating={isCreating}
-                  onSelectApp={handleSelectApp} onCreateApp={handleCreateApp}
-                />
+                isLoading && apps.length === 0 ? (
+                  <div className="p-1"><TableListSkeleton rows={8} /></div>
+                ) : (
+                  <AppGrid
+                    apps={apps} selectedApp={selectedApp}
+                    isAuthenticated={isAuthenticated} isCreating={isCreating}
+                    onSelectApp={handleSelectApp} onCreateApp={handleCreateApp}
+                  />
+                )
               )}
               {view === 'tables' && (
-                <TableManager
-                  selectedApp={selectedApp} tables={tables} selectedTableId={selectedTableId}
-                  isLoading={isLoading} onSelectTable={handleSelectTable}
-                  onDeleteTable={handleDeleteTable} onCreateTable={handleCreateTable}
-                  onSwitchToApps={() => setView('apps')}
-                />
+                isLoading && tables.length === 0 ? (
+                  <div className="p-1"><TableListSkeleton rows={6} /></div>
+                ) : (
+                  <TableManager
+                    selectedApp={selectedApp} tables={tables} selectedTableId={selectedTableId}
+                    isLoading={isLoading} onSelectTable={handleSelectTable}
+                    onDeleteTable={handleDeleteTable} onCreateTable={handleCreateTable}
+                    onSwitchToApps={() => setView('apps')}
+                  />
+                )
               )}
               {view === 'records' && (
-                <RecordManager
-                  appToken={selectedApp?.app_token ?? ''} tableId={selectedTableId}
-                  fields={tableFields} displayFields={displayFields} records={displayRecords} isLoading={isLoading}
-                  onSwitchToTables={() => setView('tables')}
-                  onCreateRecord={handleCreateRecord} onDeleteRecord={handleDeleteRecord}
-                  warming={warming} loadedCount={allRecords.length}
-                  currentPage={currentPage} total={total} pageSize={PAGE_SIZE}
-                  onNextPage={handleNextPage} onPrevPage={handlePrevPage} onGoToPage={handleGoToPage}
-                  sortFieldId={sortFieldId} sortOrder={sortOrder} onSort={handleSort}
-                />
+                isLoading && allRecords.length === 0 ? (
+                  <div className="p-1"><RecordListSkeleton cols={displayFields.length || 4} rows={8} /></div>
+                ) : (
+                  <RecordManager
+                    appToken={selectedApp?.app_token ?? ''} tableId={selectedTableId}
+                    appName={selectedApp?.name ?? ''}
+                    fields={tableFields} displayFields={displayFields} records={displayRecords} isLoading={isLoading}
+                    onSwitchToTables={() => setView('tables')}
+                    onCreateRecord={handleCreateRecord} onDeleteRecord={handleDeleteRecord}
+                    warming={warming} loadedCount={allRecords.length}
+                    currentPage={currentPage} total={total} pageSize={PAGE_SIZE}
+                    onNextPage={handleNextPage} onPrevPage={handlePrevPage} onGoToPage={handleGoToPage}
+                    sortFieldId={sortFieldId} sortOrder={sortOrder} onSort={handleSort}
+                  />
+                )
               )}
             </div>
           </div>

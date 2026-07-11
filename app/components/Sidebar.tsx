@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { Table2, Workflow, FileText, Grid3X3, Sparkles, Menu, X } from 'lucide-react';
 import { GuardedLink } from '@/app/components/NavigationGuard';
-import ThemeToggle from '@/app/components/ThemeToggle';
 
 const NAV_ITEMS = [
   {
@@ -141,7 +140,6 @@ export default function Sidebar() {
             </svg>
             返回首页
           </GuardedLink>
-          <ThemeToggle />
         </div>
       </aside>
     </>

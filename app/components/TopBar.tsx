@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import OAuthLogin from './OAuthLogin';
+import ThemeToggle from './ThemeToggle';
 
 interface TopBarProps {
   /** 左侧内容：标题、图标或面包屑 */
@@ -37,6 +38,7 @@ export default function TopBar({
       {children}
       <div className="flex items-center gap-3">
         {actions}
+        <ThemeToggle />
         <OAuthLogin
           isAuthenticated={isAuthenticated}
           oauthUrl={oauthUrl}

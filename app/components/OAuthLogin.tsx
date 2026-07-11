@@ -1,6 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { LogOut } from 'lucide-react';
+import ConfirmDialog from './ConfirmDialog';
 
 interface OAuthLoginProps {
   isAuthenticated: boolean;
@@ -14,6 +16,8 @@ interface OAuthLoginProps {
 export default function OAuthLogin({
   isAuthenticated, oauthUrl, isLoading, onFetchApps, onLogout, hideLogin = false,
 }: OAuthLoginProps) {
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
   if (!isAuthenticated && hideLogin) return null;
 
   if (!isAuthenticated) {
@@ -48,12 +52,26 @@ export default function OAuthLogin({
       </button>
 
       <button
-        onClick={onLogout}
+        onClick={() => setShowLogoutConfirm(true)}
         className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-neutral-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200"
       >
         <LogOut className="w-3 h-3" />
         退出登录
       </button>
+
+      <ConfirmDialog
+        open={showLogoutConfirm}
+        title="退出登录"
+        message="确定要退出登录吗？退出后需要重新授权才能访问飞书数据。"
+        confirmLabel="退出登录"
+        cancelLabel="取消"
+        variant="danger"
+        onConfirm={async () => {
+          await onLogout();
+          setShowLogoutConfirm(false);
+        }}
+        onCancel={() => setShowLogoutConfirm(false)}
+      />
     </div>
   );
 }

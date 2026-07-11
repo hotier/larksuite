@@ -4,6 +4,10 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { ArrowRight, Key, Table2, Workflow, FileText, Grid3X3, Sparkles, LogOut, Zap } from 'lucide-react';
 import { fetchOAuthUrl, checkAuthStatus, logout as apiLogout } from '@/lib/api';
+import { ANIM_STYLES } from '@/lib/animations';
+import ConfirmDialog from '@/app/components/ConfirmDialog';
+import { useRouteTransition } from '@/app/components/RouteTransition';
+import ThemeToggle from '@/app/components/ThemeToggle';
 
 const DOT_GRID =
   `radial-gradient(circle, #d4a5741a 1px, transparent 1px)`;
@@ -56,53 +60,11 @@ function accentClasses(color: string) {
 }
 
 /* ═══════════════════════════════════════════════
-   内联动画样式
+   首页组件
    ═══════════════════════════════════════════════ */
-const ANIM_STYLES = `
-  @keyframes shimmer {
-    0%, 100% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-  }
-  .animate-shimmer {
-    animation: shimmer 4s ease-in-out infinite;
-    background-size: 200% 200%;
-  }
-
-  @keyframes glow-pulse {
-    0%, 100% { opacity: 0.3; transform: scale(1); }
-    50% { opacity: 0.7; transform: scale(1.15); }
-  }
-  .animate-glow-pulse {
-    animation: glow-pulse 3s ease-in-out infinite;
-  }
-
-  @keyframes float {
-    0%, 100% { transform: translateY(0px); }
-    50% { transform: translateY(-10px); }
-  }
-  .animate-float {
-    animation: float 5s ease-in-out infinite;
-  }
-
-  @keyframes glow-line {
-    0%, 100% { background-position: -200% 0; }
-    50% { background-position: 200% 0; }
-  }
-  .animate-glow-line {
-    background: linear-gradient(90deg, transparent, #f59e0b, transparent);
-    background-size: 200% 100%;
-    animation: glow-line 3s ease-in-out infinite;
-  }
-
-  @keyframes spin-slower {
-    to { transform: rotate(360deg); }
-  }
-  .animate-spin-slower {
-    animation: spin-slower 4s linear infinite;
-  }
-`;
 
 export default function RootPage() {
+  const { navigate } = useRouteTransition();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [oauthUrl, setOauthUrl] = useState('');
   const [checking, setChecking] = useState(true);
@@ -120,6 +82,8 @@ export default function RootPage() {
     };
     init();
   }, []);
+
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const handleLogout = useCallback(async () => {
     await apiLogout();
@@ -150,6 +114,13 @@ export default function RootPage() {
   return (
     <div className="min-h-screen flex flex-col relative overflow-hidden" style={{ background: 'var(--page-bg)' }}>
       <style>{ANIM_STYLES}</style>
+
+      {/* 未登录时无固定顶栏，右上角浮动主题切换 */}
+      {!isAuthenticated && (
+        <div className="fixed top-4 right-4 z-50">
+          <ThemeToggle />
+        </div>
+      )}
 
       {/* ── 背景 ── */}
       <div className="absolute inset-0 pointer-events-none opacity-30" style={{ backgroundImage: DOT_GRID, backgroundSize: '24px 24px' }} />
@@ -186,6 +157,7 @@ export default function RootPage() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              <ThemeToggle />
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50/80 border border-emerald-200/50">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
@@ -194,7 +166,7 @@ export default function RootPage() {
                 <span className="text-xs font-semibold text-emerald-700">已连接飞书</span>
               </div>
               <button
-                onClick={handleLogout}
+                onClick={() => setShowLogoutConfirm(true)}
                 className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-neutral-400 hover:text-red-500 hover:bg-red-50 transition-all duration-200"
               >
                 <LogOut className="w-3 h-3" />
@@ -307,6 +279,12 @@ export default function RootPage() {
                   <Link
                     key={card.href}
                     href={card.href}
+                    onClick={(e) => {
+                      // 保留中键/新标签页打开行为，左键则走过渡动画
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                      e.preventDefault();
+                      navigate(card.href, { accent: card.accent });
+                    }}
                     className={`${baseClass} ${hoverClass}`}
                     style={{ transitionDelay: `${200 + i * 100}ms` }}
                   >
@@ -333,6 +311,21 @@ export default function RootPage() {
       <footer className="relative py-5 text-center">
         <span className="text-xs text-neutral-300 tracking-widest uppercase">Lark Workspace · Lark Sdk</span>
       </footer>
+
+      {/* 退出确认弹窗：置于根容器下（非 header 内），避免 backdrop-blur 创建的包含块把 fixed 弹窗挤到顶部 */}
+      <ConfirmDialog
+        open={showLogoutConfirm}
+        title="退出登录"
+        message="确定要退出登录吗？退出后需要重新授权才能访问飞书数据。"
+        confirmLabel="退出登录"
+        cancelLabel="取消"
+        variant="danger"
+        onConfirm={async () => {
+          await handleLogout();
+          setShowLogoutConfirm(false);
+        }}
+        onCancel={() => setShowLogoutConfirm(false)}
+      />
     </div>
   );
 }

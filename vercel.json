@@ -1,7 +1,7 @@
 {
   "crons": [
     {
-      "path": "/api/bitable/keepalive",
+      "path": "/api/feishu/keepalive",
       "schedule": "0 0 * * *"
     }
   ]

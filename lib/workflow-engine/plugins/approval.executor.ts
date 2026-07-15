@@ -31,9 +31,9 @@ export const approvalExecutor: NodeExecutor = async (node, ctx) => {
   }
 
   try {
-    const { bitableService } = await import('@/services/feishu-bitable');
+    const { feishuService } = await import('@/services/feishu');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = bitableService as any;
+    const svc = feishuService as any;
     if (typeof svc.createApproval === 'function') {
       const result = await svc.createApproval({
         approvalCode: cfg.approvalCode, title: cfg.title, applicant, formData,

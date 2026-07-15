@@ -3,7 +3,7 @@ import { savePreviewToken } from '@/lib/preview-token-store';
 import { logger } from '@/lib/logger';
 
 /**
- * POST /api/bitable/files/token
+ * POST /api/feishu/files/token
  * 将附件预览参数存储并返回一个短 ID
  * Body: { file_token, table_id?, field_id?, record_id?, name? }
  * Response: { id: "abc123de" }

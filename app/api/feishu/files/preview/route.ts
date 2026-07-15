@@ -4,7 +4,7 @@ import { proxyFeishuFile } from '@/lib/preview-proxy';
 import { logger } from '@/lib/logger';
 
 /**
- * GET /api/bitable/files/preview?t=<encrypted_token>
+ * GET /api/feishu/files/preview?t=<encrypted_token>
  * 代理飞书文件内容（旧格式，保留兼容）
  */
 export async function GET(request: Request) {

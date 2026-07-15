@@ -1,4 +1,4 @@
-import { bitableService } from '@/services/feishu-bitable';
+import { feishuService } from '@/services/feishu';
 
 interface FileParams {
   fileToken: string;
@@ -14,7 +14,7 @@ interface FileParams {
 export async function proxyFeishuFile(params: FileParams) {
   const { fileToken, tableId, fieldId, recordId, fileName } = params;
 
-  const tmpUrl = await bitableService.getTmpDownloadUrl(
+  const tmpUrl = await feishuService.getTmpDownloadUrl(
     fileToken,
     tableId,
     fieldId,

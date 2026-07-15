@@ -2,7 +2,7 @@
  * 前端 API 客户端 — 所有数据获取路径的入口
  *
  * 数据流：
- *   前端组件 → lib/api.ts → POST /api/bitable → services/feishu-bitable.ts → 飞书开放平台
+ *   前端组件 → lib/api.ts → POST /api/feishu → services/feishu.ts → 飞书开放平台
  *
  * ⚠️ Token 不再存储于 localStorage，改为 HttpOnly Cookie 自动携带：
  *   - OAuth 回调后，服务端将 token 写入 HttpOnly Cookie（JS 不可读，防 XSS）
@@ -13,7 +13,7 @@
 import type {
   ApiResponse,
   App,
-  BitableRecord,
+  FeishuRecord,
   Field,
   ListAppsData,
   ListRecordsData,
@@ -26,14 +26,14 @@ import type {
 
 import { clientCacheGet, clientCacheSet, clientCacheDel, clientCacheClearAll } from '@/lib/clientCache';
 
-const API_URL = '/api/bitable';
+const API_URL = '/api/feishu';
 
 /** 浏览器本地缓存（三层第一层）统一 TTL：30 分钟 */
 const LS_TTL = 30 * 60 * 1000;
 
 /**
  * 导出多维表格（或全部数据表）为 Excel/CSV 并触发浏览器下载。
- * 调用 /api/bitable/export 拿到文件流，按响应头中的文件名落地。
+ * 调用 /api/feishu/export 拿到文件流，按响应头中的文件名落地。
  * @param tableId 可选；传入则只导出该数据表，不传则导出全部数据表。
  * @param appName 可选；多维表格名，用于生成「多维表格名_数据表名」文件名。
  */
@@ -43,7 +43,7 @@ export async function exportBitable(
   tableId?: string,
   appName?: string,
 ): Promise<void> {
-  const res = await fetch('/api/bitable/export', {
+  const res = await fetch('/api/feishu/export', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -419,7 +419,7 @@ const fieldsCache = new Map<string, { data: Field[]; ts: number }>();
 /** 前端全量记录缓存（key = appToken:tableId:sort）
  *  一次拉取整表后缓存在会话内，之后翻页/跳页均为纯前端切片，无需再次请求飞书。 */
 const ALL_RECORDS_TTL = 2 * 60 * 1000;
-const allRecordsCache = new Map<string, { data: BitableRecord[]; total: number; ts: number }>();
+const allRecordsCache = new Map<string, { data: FeishuRecord[]; total: number; ts: number }>();
 
 /** 清除全量记录缓存（创建/删除/更新记录后调用）；不传 tableId 则清空该 app 下全部 */
 export function invalidateRecordsCache(appToken: string, tableId?: string): void {
@@ -528,18 +528,18 @@ export async function listRecords(appToken: string, tableId: string, pageSize = 
   return request<ListRecordsData>({ action: 'list', appToken, tableId, pageSize, pageToken, force });
 }
 
-export async function readRecord(appToken: string, tableId: string, recordId: string, force = false): Promise<BitableRecord> {
-  return request<BitableRecord>({ action: 'read', appToken, tableId, recordId, force });
+export async function readRecord(appToken: string, tableId: string, recordId: string, force = false): Promise<FeishuRecord> {
+  return request<FeishuRecord>({ action: 'read', appToken, tableId, recordId, force });
 }
 
-export async function createRecord(appToken: string, tableId: string, fields: Record<string, unknown>): Promise<BitableRecord> {
-  const result = await request<BitableRecord>({ action: 'create', appToken, tableId, fields });
+export async function createRecord(appToken: string, tableId: string, fields: Record<string, unknown>): Promise<FeishuRecord> {
+  const result = await request<FeishuRecord>({ action: 'create', appToken, tableId, fields });
   invalidateRecordsCache(appToken, tableId); // 失效会话内全量记录缓存，下次读取重新拉
   return result;
 }
 
-export async function updateRecord(appToken: string, tableId: string, recordId: string, fields: Record<string, unknown>): Promise<BitableRecord> {
-  const result = await request<BitableRecord>({ action: 'update', appToken, tableId, recordId, fields });
+export async function updateRecord(appToken: string, tableId: string, recordId: string, fields: Record<string, unknown>): Promise<FeishuRecord> {
+  const result = await request<FeishuRecord>({ action: 'update', appToken, tableId, recordId, fields });
   invalidateRecordsCache(appToken, tableId);
   return result;
 }
@@ -579,7 +579,7 @@ export async function warmUpAllRecords(
   tableId: string,
   pageSize: number,
   startToken: string,
-  startRecords: BitableRecord[],
+  startRecords: FeishuRecord[],
 ): Promise<ListRecordsData> {
   const key = `${appToken}:${tableId}:none`;
   const cached = allRecordsCache.get(key);
@@ -590,7 +590,7 @@ export async function warmUpAllRecords(
   if (existing) return existing;
 
   const promise = (async () => {
-    const all: BitableRecord[] = [...startRecords];
+    const all: FeishuRecord[] = [...startRecords];
     let token = startToken;
     let total = startRecords.length;
     while (token) {

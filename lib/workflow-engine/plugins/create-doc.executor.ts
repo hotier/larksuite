@@ -19,9 +19,9 @@ export const createDocExecutor: NodeExecutor = async (node, ctx) => {
     : cfg.content;
 
   try {
-    const { bitableService } = await import('@/services/feishu-bitable');
+    const { feishuService } = await import('@/services/feishu');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = bitableService as any;
+    const svc = feishuService as any;
     if (typeof svc.createDoc === 'function') {
       const result = await svc.createDoc({
         title: title || '无标题', content, docType: cfg.docType || 'docx',

@@ -19,9 +19,9 @@ export const calendarEventExecutor: NodeExecutor = async (node, ctx) => {
   }
 
   try {
-    const { bitableService } = await import('@/services/feishu-bitable');
+    const { feishuService } = await import('@/services/feishu');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = bitableService as any;
+    const svc = feishuService as any;
     if (typeof svc.createCalendarEvent === 'function') {
       const attendeesList = cfg.attendees ? JSON.parse(cfg.attendees) as string[] : [];
       const result = await svc.createCalendarEvent({

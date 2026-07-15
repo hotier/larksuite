@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Type, Hash, Calendar, CircleDot, CheckSquare, Check, User, Phone, Mail, Link, Paperclip, Sigma, Search, Clock, UserPlus, History, Download, Loader2 } from 'lucide-react';
-import type { Field, FieldType, BitableRecord } from '@/types';
+import type { Field, FieldType, FeishuRecord } from '@/types';
 import { exportBitable } from '@/lib/api';
 import { formatFieldValue } from '@/lib/field-format';
 import ConfirmDialog from '@/app/components/ConfirmDialog';
@@ -52,7 +52,7 @@ interface RecordManagerProps {
   tableId: string;
   appName: string;
   fields: Field[];
-  records: BitableRecord[];
+  records: FeishuRecord[];
   isLoading: boolean;
   onSwitchToTables: () => void;
   onCreateRecord: (fields: Record<string, unknown>) => Promise<void>;
@@ -113,7 +113,7 @@ function NoFields() {
 }
 
 /** 从记录中安全获取字段值 — 兼容 field_id 和字段名称两种 key 格式 */
-export function getRecordFieldValue(record: BitableRecord, field: Field): unknown {
+export function getRecordFieldValue(record: FeishuRecord, field: Field): unknown {
   if (!record?.fields) return undefined;
   // 优先 field_id（SDK 使用 field_name_type:'field_id'），回退 field name
   if (field.field_id in record.fields) return record.fields[field.field_id];
@@ -351,7 +351,7 @@ function AttachmentsCell({
     Promise.all(
       validFiles.map(async (file) => {
         try {
-          const res = await fetch('/api/bitable/files/token', {
+          const res = await fetch('/api/feishu/files/token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

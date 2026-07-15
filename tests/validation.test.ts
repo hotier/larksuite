@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseSecretToken, parseWebhookBody, validateBitableBody } from '@/lib/validation';
+import { parseSecretToken, parseWebhookBody, validateApiBody } from '@/lib/validation';
 
 describe('parseSecretToken', () => {
   it('trims whitespace from a valid token', () => {
@@ -40,30 +40,30 @@ describe('parseWebhookBody', () => {
   });
 });
 
-describe('validateBitableBody', () => {
+describe('validateApiBody', () => {
   it('returns an error when action is missing', () => {
-    expect(validateBitableBody({})).toMatch(/action/);
+    expect(validateApiBody({})).toMatch(/action/);
   });
 
   it('returns an error for an unknown action', () => {
-    expect(validateBitableBody({ action: 'hack' })).toMatch(/不支持的操作类型/);
+    expect(validateApiBody({ action: 'hack' })).toMatch(/不支持的操作类型/);
   });
 
   it('passes for a no-payload action', () => {
-    expect(validateBitableBody({ action: 'authStatus' })).toBeNull();
+    expect(validateApiBody({ action: 'authStatus' })).toBeNull();
   });
 
   it('returns an error when a required string field is empty', () => {
-    expect(validateBitableBody({ action: 'createApp', appName: '' })).toMatch(/缺少参数: appName/);
+    expect(validateApiBody({ action: 'createApp', appName: '' })).toMatch(/缺少参数: appName/);
   });
 
   it('returns an error when a required field is missing', () => {
-    expect(validateBitableBody({ action: 'read' })).toMatch(/缺少参数: appToken/);
+    expect(validateApiBody({ action: 'read' })).toMatch(/缺少参数: appToken/);
   });
 
   it('passes when all required fields are present', () => {
     expect(
-      validateBitableBody({
+      validateApiBody({
         action: 'create',
         appToken: 't',
         tableId: 'tbl',
@@ -73,6 +73,6 @@ describe('validateBitableBody', () => {
   });
 
   it('rejects missing fields on create', () => {
-    expect(validateBitableBody({ action: 'create', appToken: 't' })).toMatch(/缺少参数/);
+    expect(validateApiBody({ action: 'create', appToken: 't' })).toMatch(/缺少参数/);
   });
 });

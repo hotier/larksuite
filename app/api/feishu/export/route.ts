@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { bitableService } from '@/services/feishu-bitable';
+import { feishuService } from '@/services/feishu';
 import { logger } from '@/lib/logger';
+import { TOKEN_COOKIE, EXPIRE_COOKIE } from '@/lib/auth-constants';
 
 // 导出涉及文件流，必须使用 Node.js 运行时
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-/** Cookie 名称常量（与 api/bitable/route.ts 保持一致） */
-const TOKEN_COOKIE = 'feishu_token';
-const EXPIRE_COOKIE = 'feishu_token_expire';
 
 const CONTENT_TYPES: Record<string, string> = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -16,7 +13,7 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 /**
- * POST /api/bitable/export
+ * POST /api/feishu/export
  * body: { appToken: string, format?: 'xlsx' | 'csv', tableId?: string }
  * 导出多维表格（或全部数据表）为 Excel/CSV 并触发下载
  */
@@ -34,7 +31,7 @@ export async function POST(request: NextRequest) {
     }
 
     // drive 导出必须以用户身份执行：先确保服务端托管并自动刷新了 user_access_token
-    const authed = await bitableService.ensureAuth();
+    const authed = await feishuService.ensureAuth();
     if (!authed) {
       return NextResponse.json(
         { error: '登录已失效，请重新授权', needLogin: true },
@@ -53,7 +50,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 读取记录拼装导出（内部用应用身份），tableId 为空时导出全部数据表。
-    const { buffer, fileName } = await bitableService.exportBitable(appToken, format, undefined, tableId, appName);
+    const { buffer, fileName } = await feishuService.exportBitable(appToken, format, undefined, tableId, appName);
 
     // 仅过滤 Windows 非法字符与控制字符，并去掉空白；保留【】、emoji 等合法字符
     // （fileName 已由 services 端 sanitize 过，这里只做兜底，不再把【】/👤等洗成下划线）

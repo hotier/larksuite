@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
  * 统一的 API 响应构造器。
  *
  * 项目内目前存在多套响应信封：
- *   - /api/bitable       → { success, error, data }
+ *   - /api/feishu       → { success, error, data }
  *   - /api/workflows、oauth → { error }
  *   - /api/executions    → { code, msg }
  * 前端对各端点的解析方式强耦合，因此这里只提供构造工具，**不强制统一字段名**，

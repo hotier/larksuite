@@ -1,7 +1,7 @@
 import type { FieldType } from '@/types';
 
 /**
- * 字段值格式化：前端展示（RecordManager）与导出（feishu-bitable.exportBitable）共享同一套逻辑。
+ * 字段值格式化：前端展示（RecordManager）与导出（feishu.exportBitable）共享同一套逻辑。
  * 后续格式规则若有变动，只需修改本文件一处。
  *
  * 唯一的展示差异（前端空值显示「—」、导出显示空串）通过 emptyText 参数吸收。

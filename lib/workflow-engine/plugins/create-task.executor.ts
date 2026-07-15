@@ -23,9 +23,9 @@ export const createTaskExecutor: NodeExecutor = async (node, ctx) => {
   }
 
   try {
-    const { bitableService } = await import('@/services/feishu-bitable');
+    const { feishuService } = await import('@/services/feishu');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = bitableService as any;
+    const svc = feishuService as any;
     if (typeof svc.createTask === 'function') {
       const result = await svc.createTask({
         title: title || '无标题', description: cfg.description, assignee,

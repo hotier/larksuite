@@ -2,7 +2,7 @@
 // 运行：node scripts/check-oauth-config.js
 
 const APP_ID = 'cli_a9cfd8bf1e785cd3';
-const REDIRECT_URI = 'http://localhost:3001/api/bitable/oauth/callback';
+const REDIRECT_URI = 'http://localhost:3000/api/auth/callback';
 
 console.log('=== 飞书 OAuth 配置检查 ===\n');
 

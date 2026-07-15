@@ -1,4 +1,4 @@
-# 飞书工作台 · Bitable Manager
+# Larksuite · 飞书工作台
 
 一个基于飞书开放平台 API 的多维表格 / 云文档 / 在线表格管理与自动化工作流平台。
 通过 OAuth 授权后将飞书 Token 托管在服务端（HttpOnly Cookie + 数据库），前端无需接触密钥，并支持用 Webhook 触发可视化工作流。
@@ -63,8 +63,8 @@ npm test         # 运行 Vitest 单元测试
 
 ```
 app/                 # Next.js App Router（路由 + 页面 + API Route Handlers）
-  api/               # API 路由（bitable 代理、oauth、workflows、executions、webhook…）
-  (app)/             # 登录后主界面（bitable / docs / sheets / flow）
+  api/               # API 路由（feishu 代理、oauth、workflows、executions、webhook…）
+  (app)/             # 登录后主界面（feishu / docs / sheets / flow）
   components/        # UI 组件（管理器、工作流编辑器、执行记录等）
 lib/                 # 工具与基础设施（crypto、cache、db、validation、logger…）
 services/            # 飞书 API 服务封装

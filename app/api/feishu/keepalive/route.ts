@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { bitableService } from '@/services/feishu-bitable';
+import { feishuService } from '@/services/feishu';
 import { logger } from '@/lib/logger';
 
 /**
@@ -22,7 +22,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const ok = await bitableService.ensureAuth();
+    const ok = await feishuService.ensureAuth();
     if (ok) {
       return NextResponse.json({ success: true, message: 'feishu token refreshed' });
     }

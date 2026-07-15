@@ -17,7 +17,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       .then((valid) => {
         if (!valid) {
           invalidateAuthCache();
-          window.location.replace('/');
+          window.location.replace('');
           return;
         }
         const elapsed = Date.now() - start;

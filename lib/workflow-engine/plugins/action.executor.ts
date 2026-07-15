@@ -9,12 +9,12 @@ import type { WorkflowNode, ExecutionStep } from '@/types';
 import type { ExecutionContext, NodeExecutor } from '../node-registry';
 
 /**
- * 延迟导入 bitableService，仅在执行时加载（服务端）。
+ * 延迟导入 feishuService，仅在执行时加载（服务端）。
  * 此文件不会被客户端 bundle 引用。
  */
-async function getBitableService() {
-  const { bitableService } = await import('@/services/feishu-bitable');
-  return bitableService;
+async function getFeishuService() {
+  const { feishuService } = await import('@/services/feishu');
+  return feishuService;
 }
 
 // ---- 共享工具（与 action.plugin.ts 中的逻辑一致）----
@@ -55,7 +55,7 @@ async function resolveFieldValues(
               const b64len = raw.includes(',') ? raw.length - raw.indexOf(',') - 1 : raw.length;
               const approxKb = (b64len * 3 / 4 / 1024).toFixed(1);
               console.log(`[webhook] 附件字段「${m.fieldName}」: base64 图片, mime=${mime}, 约 ${approxKb}KB`);
-              const bitableService = await getBitableService();
+              const feishuService = await getFeishuService();
               // 统一转换为 webp：扩展名统一、体积更小、飞书预览更稳
               let uploadDataUrl = raw;
               let ext = 'webp';
@@ -80,7 +80,7 @@ async function resolveFieldValues(
                 // 非图片（如 pdf）保持原扩展名
                 ext = mime.includes('/') ? mime.split('/')[1] : 'bin';
               }
-              const fileToken = await bitableService.uploadFileToBitable({
+              const fileToken = await feishuService.uploadFileToBitable({
                 fileName: `${m.fieldName || 'file'}.${ext}`,
                 appToken,
                 dataUrl: uploadDataUrl,
@@ -133,7 +133,7 @@ function requireConfig(node: WorkflowNode) {
 // ---- Executor ----
 
 export const actionExecutor: NodeExecutor = async (node, ctx) => {
-  const bitableService = await getBitableService();
+  const feishuService = await getFeishuService();
   const stepStart = Date.now();
   const { cfg, err } = requireConfig(node);
   if (err) return err;
@@ -148,7 +148,7 @@ export const actionExecutor: NodeExecutor = async (node, ctx) => {
         if (!fields || Object.keys(fields).length === 0) {
           return mkStep(node.title, 'create_record', false, '无字段映射', undefined, stepStart);
         }
-        const rec = await bitableService.createRecord(cfg.targetAppToken, cfg.targetTableId, fields);
+        const rec = await feishuService.createRecord(cfg.targetAppToken, cfg.targetTableId, fields);
         return mkStep(node.title, 'create_record', true, `记录已创建 (${rec.record_id})`, {
           record_id: rec.record_id,
           fields: rec.fields as Record<string, unknown>,
@@ -156,7 +156,7 @@ export const actionExecutor: NodeExecutor = async (node, ctx) => {
         }, stepStart);
       }
       case 'read_records': {
-        const data = await bitableService.listRecords(cfg.targetAppToken, cfg.targetTableId, 100, '');
+        const data = await feishuService.listRecords(cfg.targetAppToken, cfg.targetTableId, 100, '');
         const records = data.records ?? [];
         const first = records[0] as { record_id?: string; fields?: Record<string, unknown> } | undefined;
         return mkStep(node.title, 'read_records', true, `查询完成 — ${data.total ?? '?'} 条`, {
@@ -173,16 +173,16 @@ export const actionExecutor: NodeExecutor = async (node, ctx) => {
         }
         let recordId: string | null = null;
         if (cfg.filters && cfg.filters.length > 0) {
-          recordId = await bitableService.findRecordByFilters(
+          recordId = await feishuService.findRecordByFilters(
             cfg.targetAppToken, cfg.targetTableId,
             cfg.filters as Array<{ fieldName: string; operator: string; value: string }>,
           );
         } else {
-          const listData = await bitableService.listRecords(cfg.targetAppToken, cfg.targetTableId, 1, '');
+          const listData = await feishuService.listRecords(cfg.targetAppToken, cfg.targetTableId, 1, '');
           recordId = (listData?.records ?? [])[0]?.record_id ?? null;
         }
         if (!recordId) return mkStep(node.title, 'update_record', false, '无匹配记录', undefined, stepStart);
-        const rec = await bitableService.updateRecord(cfg.targetAppToken, cfg.targetTableId, recordId, fields);
+        const rec = await feishuService.updateRecord(cfg.targetAppToken, cfg.targetTableId, recordId, fields);
         return mkStep(node.title, 'update_record', true, '记录已更新', {
           record_id: recordId,
           fields: rec.fields as Record<string, unknown>,
@@ -192,16 +192,16 @@ export const actionExecutor: NodeExecutor = async (node, ctx) => {
       case 'delete_record': {
         let recordId: string | null = null;
         if (cfg.filters && cfg.filters.length > 0) {
-          recordId = await bitableService.findRecordByFilters(
+          recordId = await feishuService.findRecordByFilters(
             cfg.targetAppToken, cfg.targetTableId,
             cfg.filters as Array<{ fieldName: string; operator: string; value: string }>,
           );
         } else {
-          const listData = await bitableService.listRecords(cfg.targetAppToken, cfg.targetTableId, 1, '');
+          const listData = await feishuService.listRecords(cfg.targetAppToken, cfg.targetTableId, 1, '');
           recordId = (listData?.records ?? [])[0]?.record_id ?? null;
         }
         if (!recordId) return mkStep(node.title, 'delete_record', false, '无匹配记录', undefined, stepStart);
-        await bitableService.deleteRecord(cfg.targetAppToken, cfg.targetTableId, recordId);
+        await feishuService.deleteRecord(cfg.targetAppToken, cfg.targetTableId, recordId);
         return mkStep(node.title, 'delete_record', true, '记录已删除', { record_id: recordId }, stepStart);
       }
     }

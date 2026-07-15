@@ -1,7 +1,7 @@
-// ====== 飞书 Bitable 类型定义 ======
+// ====== 飞书通用类型定义 ======
 
 /** 飞书记录 */
-export interface BitableRecord {
+export interface FeishuRecord {
   record_id: string;
   fields: Record<string, unknown>;
   created_time: string;
@@ -98,7 +98,7 @@ export interface App {
 // ====== API 请求/响应类型 ======
 
 /** API action 类型 */
-export type BitableAction =
+export type ApiAction =
   | 'list'
   | 'read'
   | 'create'
@@ -119,8 +119,8 @@ export type BitableAction =
   | 'exchangeAuthCode';
 
 /** 通用 API 请求体 */
-export interface BitableRequest {
-  action: BitableAction;
+export interface ApiRequest {
+  action: ApiAction;
   appToken?: string;
   tableId?: string;
   recordId?: string;
@@ -146,7 +146,7 @@ export interface ApiResponse<T = unknown> {
 
 /** 记录列表响应 */
 export interface ListRecordsData {
-  records: BitableRecord[];
+  records: FeishuRecord[];
   has_more: boolean;
   page_token: string;
   total: number;

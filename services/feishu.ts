@@ -3,7 +3,7 @@ import { loadTokenSync, saveToken, deleteToken, reloadToken } from '@/lib/token-
 import { withCache, cacheKey, cacheDel, cacheDelByPrefix, TTL } from '@/lib/cache';
 import { formatFieldValue } from '@/lib/field-format';
 import type {
-  BitableRecord,
+  FeishuRecord,
   ListRecordsData,
   ListTablesData,
   Table,
@@ -67,7 +67,8 @@ function throwFeishuError(prefix: string, code: number | undefined, msg: string 
 
 // ====== 服务类 ======
 
-class FeishuBitable {
+class FeishuService {
+  private readonly LOG_PREFIX = '[FeishuService]';
   private client: Client;
 
   /** 存储 OAuth 登录后的用户 token，供 webhook 等无法显式传 token 的场景使用 */
@@ -93,13 +94,13 @@ class FeishuBitable {
         this.userTokenExpireTime = stored.accessTokenExpireAt;
         this.refreshToken = stored.refreshToken;
         this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
-        console.log('[FeishuBitable] 从内存缓存恢复了有效的 user token');
+        console.log('[FeishuService] 从内存缓存恢复了有效的 user token');
       } else if (Date.now() < stored.refreshTokenExpireAt) {
         this.refreshToken = stored.refreshToken;
         this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
-        console.log('[FeishuBitable] access_token 已过期，refresh_token 仍有效');
+        console.log('[FeishuService] access_token 已过期，refresh_token 仍有效');
       } else {
-        console.log('[FeishuBitable] 缓存 token 已全部过期，需要重新登录');
+        console.log('[FeishuService] 缓存 token 已全部过期，需要重新登录');
       }
     }
   }
@@ -107,7 +108,7 @@ class FeishuBitable {
   // ====== Token 管理（OAuth + 持久化存储） ======
 
   /** 用 OAuth code 换取 user_access_token，同时存入类实例供 webhook 使用 */
-  async getUserAccessToken(code: string): Promise<{
+  async getUserAccessToken(code: string, redirectUri?: string): Promise<{
     accessToken: string;
     refreshToken: string;
     expire: number;
@@ -116,7 +117,8 @@ class FeishuBitable {
       data: {
         grant_type: 'authorization_code',
         code,
-      },
+        redirect_uri: redirectUri,
+      } as any,
     });
 
     if (res.code !== 0) {
@@ -199,7 +201,7 @@ class FeishuBitable {
         accessTokenExpireAt: expire,
         refreshToken: this.refreshToken,
         refreshTokenExpireAt: this.refreshTokenExpireTime,
-      }).catch((err) => console.error('[FeishuBitable] 持久化 token 失败:', err));
+      }).catch((err) => console.error('[FeishuService] 持久化 token 失败:', err));
     }
   }
 
@@ -210,7 +212,7 @@ class FeishuBitable {
     this.refreshToken = null;
     this.refreshTokenExpireTime = 0;
     // 同时删除持久化文件（fire-and-forget）
-    deleteToken().catch((err) => console.error('[FeishuBitable] 删除 token 文件失败:', err));
+    deleteToken().catch((err) => console.error('[FeishuService] 删除 token 文件失败:', err));
   }
 
   /** 实例中是否存有有效用户 token（供 webhook 等场景检查） */
@@ -238,22 +240,22 @@ class FeishuBitable {
             this.userTokenExpireTime = stored.accessTokenExpireAt;
             this.refreshToken = stored.refreshToken;
             this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
-            console.log('[FeishuBitable] 冷启动：从数据库恢复了有效的 user token');
+            console.log('[FeishuService] 冷启动：从数据库恢复了有效的 user token');
             return true;
           } else if (Date.now() < stored.refreshTokenExpireAt) {
             this.refreshToken = stored.refreshToken;
             this.refreshTokenExpireTime = stored.refreshTokenExpireAt;
-            console.log('[FeishuBitable] 冷启动：从数据库恢复了 refresh_token，尝试刷新...');
+            console.log('[FeishuService] 冷启动：从数据库恢复了 refresh_token，尝试刷新...');
           } else {
-            console.log('[FeishuBitable] 冷启动：数据库中 token 已全部过期');
+            console.log('[FeishuService] 冷启动：数据库中 token 已全部过期');
             return false;
           }
         } else {
-          console.log('[FeishuBitable] 冷启动：数据库中无 token');
+          console.log('[FeishuService] 冷启动：数据库中无 token');
           return false;
         }
       } catch (err) {
-        console.error('[FeishuBitable] 冷启动从数据库加载 token 失败:', err);
+        console.error('[FeishuService] 冷启动从数据库加载 token 失败:', err);
         return false;
       }
     }
@@ -261,12 +263,12 @@ class FeishuBitable {
     // access_token 过期，尝试用 refresh_token 刷新
     if (this.refreshToken && Date.now() < this.refreshTokenExpireTime) {
       try {
-        console.log('[FeishuBitable] access_token 过期，尝试自动刷新...');
+        console.log('[FeishuService] access_token 过期，尝试自动刷新...');
         await this.refreshUserAccessToken();
-        console.log('[FeishuBitable] 自动刷新成功');
+        console.log('[FeishuService] 自动刷新成功');
         return true;
       } catch (err) {
-        console.error('[FeishuBitable] 自动刷新失败:', err);
+        console.error('[FeishuService] 自动刷新失败:', err);
       }
     }
 
@@ -281,7 +283,7 @@ class FeishuBitable {
    * @param redirectUri 可选：回调地址，不传则用环境变量 REDIRECT_URI 或自动推导
    */
   getOAuthUrl(state?: string, redirectUri?: string): string {
-    const uri = redirectUri || process.env.REDIRECT_URI || 'http://localhost:3000/api/bitable/oauth/callback';
+    const uri = redirectUri || process.env.REDIRECT_URI || 'http://localhost:3000/api/auth/callback';
     const params = new URLSearchParams({
       client_id: this.appId,
       redirect_uri: uri,
@@ -336,7 +338,7 @@ class FeishuBitable {
         await this.refreshUserAccessToken();
         return this.userAccessToken;
       } catch (err) {
-        console.error('[FeishuBitable] getValidAccessToken 自动刷新失败:', err);
+        console.error('[FeishuService] getValidAccessToken 自动刷新失败:', err);
       }
     }
     return null;
@@ -371,7 +373,7 @@ class FeishuBitable {
     }, this.sdkOptions());
 
     if (res.code !== 0) {
-      console.error(`[FeishuBitable] batchGetTmpDownloadUrl 失败 [${res.code}]:`, res.msg);
+      console.error(`[FeishuService] batchGetTmpDownloadUrl 失败 [${res.code}]:`, res.msg);
       return null;
     }
 
@@ -387,7 +389,7 @@ class FeishuBitable {
   /**
    * 列出记录（带服务端缓存）
    * 缓存 key 形如 records:appToken:tableId:pageToken:pageSize，
-   * 与 /api/bitable 路由、工作流执行器共用 lib/cache 的同一套缓存。
+   * 与 /api/feishu 路由、工作流执行器共用 lib/cache 的同一套缓存。
    * 排序已改为前端进行，服务端不再接收 sort 参数。
    */
   async listRecords(
@@ -401,7 +403,7 @@ class FeishuBitable {
     const cacheKeyStr = cacheKey('records', appToken, tableId, pageToken || '0', String(pageSize));
     if (force) cacheDelByPrefix(cacheKey('records', appToken, tableId));
     return withCache(cacheKeyStr, async () => {
-      console.log(`[FeishuBitable] listRecords appToken=${appToken} tableId=${tableId} pageSize=${pageSize}`);
+      console.log(`[FeishuService] listRecords appToken=${appToken} tableId=${tableId} pageSize=${pageSize}`);
 
       const listParams: Record<string, unknown> = { page_size: pageSize, page_token: pageToken };
 
@@ -415,7 +417,7 @@ class FeishuBitable {
       }
 
       const d = res.data!;
-      const records: BitableRecord[] = (d.items || []).map((item) => ({
+      const records: FeishuRecord[] = (d.items || []).map((item) => ({
         record_id: item.record_id || '',
         fields: (item.fields || {}) as Record<string, unknown>,
         created_time: String(item.created_time || ''),
@@ -431,18 +433,18 @@ class FeishuBitable {
     }, TTL.RECORDS);
   }
 
-  /** 读取单条记录（带服务端缓存，与 /api/bitable 路由共用 lib/cache） */
+  /** 读取单条记录（带服务端缓存，与 /api/feishu 路由共用 lib/cache） */
   async readRecord(
     appToken: string,
     tableId: string,
     recordId: string,
     userAccessToken?: string | null,
     force = false,
-  ): Promise<BitableRecord> {
+  ): Promise<FeishuRecord> {
     const cacheKeyStr = cacheKey('record', appToken, tableId, recordId);
     if (force) cacheDel(cacheKeyStr);
     return withCache(cacheKeyStr, async () => {
-      console.log(`[FeishuBitable] readRecord appToken=${appToken} tableId=${tableId} recordId=${recordId}`);
+      console.log(`[FeishuService] readRecord appToken=${appToken} tableId=${tableId} recordId=${recordId}`);
 
       const res = await this.client.bitable.appTableRecord.get({
         path: { app_token: appToken, table_id: tableId, record_id: recordId },
@@ -467,8 +469,8 @@ class FeishuBitable {
     tableId: string,
     fields: Record<string, unknown>,
     userAccessToken?: string | null,
-  ): Promise<BitableRecord> {
-    console.log('[FeishuBitable.createRecord] appToken=%s tableId=%s fields=%s',
+  ): Promise<FeishuRecord> {
+    console.log('[FeishuService.createRecord] appToken=%s tableId=%s fields=%s',
       appToken, tableId, JSON.stringify(fields));
 
     const res = await this.client.bitable.appTableRecord.create({
@@ -498,8 +500,8 @@ class FeishuBitable {
     recordId: string,
     fields: Record<string, unknown>,
     userAccessToken?: string | null,
-  ): Promise<BitableRecord> {
-    console.log('[FeishuBitable.updateRecord] appToken=%s tableId=%s recordId=%s fields=%s',
+  ): Promise<FeishuRecord> {
+    console.log('[FeishuService.updateRecord] appToken=%s tableId=%s recordId=%s fields=%s',
       appToken, tableId, recordId, JSON.stringify(fields));
 
     const res = await this.client.bitable.appTableRecord.update({
@@ -530,7 +532,7 @@ class FeishuBitable {
     recordId: string,
     userAccessToken?: string | null,
   ): Promise<string> {
-    console.log('[FeishuBitable.deleteRecord] appToken=%s tableId=%s recordId=%s',
+    console.log('[FeishuService.deleteRecord] appToken=%s tableId=%s recordId=%s',
       appToken, tableId, recordId);
 
     const res = await this.client.bitable.appTableRecord.delete({
@@ -609,7 +611,7 @@ class FeishuBitable {
     pageToken = '',
     userAccessToken?: string | null,
   ): Promise<ListTablesData> {
-    console.log('[FeishuBitable.listTables] appToken=%s pageSize=%s pageToken=%s',
+    console.log('[FeishuService.listTables] appToken=%s pageSize=%s pageToken=%s',
       appToken, pageSize, pageToken);
 
     const payload: any = {
@@ -648,7 +650,7 @@ class FeishuBitable {
     fields: { name: string; type: FieldType }[],
     userAccessToken?: string | null,
   ): Promise<Table> {
-    console.log('[FeishuBitable.createTable] appToken=%s name=%s fields=%s',
+    console.log('[FeishuService.createTable] appToken=%s name=%s fields=%s',
       appToken, name, JSON.stringify(fields));
 
     // 飞书 SDK 需要用数字类型，把字符串 FieldType 转回数字
@@ -704,7 +706,7 @@ class FeishuBitable {
     tableId: string,
     userAccessToken?: string | null,
   ): Promise<void> {
-    console.log('[FeishuBitable.deleteTable] appToken=%s tableId=%s', appToken, tableId);
+    console.log('[FeishuService.deleteTable] appToken=%s tableId=%s', appToken, tableId);
 
     const res = await this.client.bitable.appTable.delete({
       path: { app_token: appToken, table_id: tableId },
@@ -723,7 +725,7 @@ class FeishuBitable {
     pageToken = '',
     userAccessToken?: string | null,
   ): Promise<Field[]> {
-    console.log('[FeishuBitable.listFields] appToken=%s tableId=%s pageSize=%s pageToken=%s',
+    console.log('[FeishuService.listFields] appToken=%s tableId=%s pageSize=%s pageToken=%s',
       appToken, tableId, pageSize, pageToken);
 
     const payload: any = {
@@ -756,9 +758,9 @@ class FeishuBitable {
         })) || [],
     }));
 
-    console.log('[FeishuBitable.listFields] count=%d | has_more=%s | total=%s',
+    console.log('[FeishuService.listFields] count=%d | has_more=%s | total=%s',
       mapped.length, res.data?.has_more, res.data?.total);
-    console.log('[FeishuBitable.listFields] fields=%s',
+    console.log('[FeishuService.listFields] fields=%s',
       JSON.stringify(mapped.map((f) => ({ id: f.field_id, name: f.name, type: f.type }))));
     return mapped;
   }
@@ -771,7 +773,7 @@ class FeishuBitable {
     folderToken?: string,
     userAccessToken?: string | null,
   ): Promise<App> {
-    console.log('[FeishuBitable.createApp] name=%s folderToken=%s', name, folderToken);
+    console.log('[FeishuService.createApp] name=%s folderToken=%s', name, folderToken);
 
     const res = await this.client.bitable.app.create({
       data: { name, folder_token: folderToken },
@@ -800,7 +802,7 @@ class FeishuBitable {
     folderToken?: string,
     userAccessToken?: string | null,
   ): Promise<App> {
-    console.log('[FeishuBitable.createDocx] title=%s folderToken=%s', title, folderToken);
+    console.log('[FeishuService.createDocx] title=%s folderToken=%s', title, folderToken);
 
     const res = await this.client.docx.document.create({
       data: { title, folder_token: folderToken },
@@ -829,7 +831,7 @@ class FeishuBitable {
     folderToken?: string,
     userAccessToken?: string | null,
   ): Promise<App> {
-    console.log('[FeishuBitable.createSheet] title=%s folderToken=%s', title, folderToken);
+    console.log('[FeishuService.createSheet] title=%s folderToken=%s', title, folderToken);
 
     const res = await this.client.sheets.spreadsheet.create({
       data: { title, folder_token: folderToken },
@@ -860,7 +862,7 @@ class FeishuBitable {
     folderToken = '',
     userAccessToken?: string | null,
   ): Promise<{ files: App[]; has_more: boolean; page_token: string }> {
-    console.log('[FeishuBitable.listDriveFiles] type=%s pageSize=%s pageToken=%s folderToken=%s',
+    console.log('[FeishuService.listDriveFiles] type=%s pageSize=%s pageToken=%s folderToken=%s',
       fileType, pageSize, pageToken, folderToken);
 
     const params: Record<string, unknown> = {
@@ -885,11 +887,11 @@ class FeishuBitable {
     // 打印所有文件类型，辅助排查
     const typeCounts: Record<string, number> = {};
     allFiles.forEach((f) => { typeCounts[f.type || '(null)'] = (typeCounts[f.type || '(null)'] || 0) + 1; });
-    console.log('[FeishuBitable.listDriveFiles] 所有文件类型分布:', typeCounts);
-    console.log('[FeishuBitable.listDriveFiles] 目标类型=%s 总数=%d', fileType, allFiles.length);
+    console.log('[FeishuService.listDriveFiles] 所有文件类型分布:', typeCounts);
+    console.log('[FeishuService.listDriveFiles] 目标类型=%s 总数=%d', fileType, allFiles.length);
     
     const matched = allFiles.filter((file) => file.type === fileType);
-    console.log('[FeishuBitable.listDriveFiles] 匹配数=%d', matched.length);
+    console.log('[FeishuService.listDriveFiles] 匹配数=%d', matched.length);
 
     const apps: App[] = matched.map((file) => ({
       app_token: file.token,
@@ -909,7 +911,7 @@ class FeishuBitable {
 
     // 批量获取创建人名片
     const creatorIds = [...new Set(apps.map((a) => a.creator_id).filter(Boolean))];
-    console.log('[FeishuBitable.listDriveFiles] creatorIds:', creatorIds);
+    console.log('[FeishuService.listDriveFiles] creatorIds:', creatorIds);
     if (creatorIds.length > 0) {
       try {
         const profileMap = await this.getUserNamesBatch(creatorIds, userAccessToken);
@@ -921,7 +923,7 @@ class FeishuBitable {
           }
         }
       } catch (err) {
-        console.warn('[FeishuBitable.listDriveFiles] 获取创建人名片失败:', err);
+        console.warn('[FeishuService.listDriveFiles] 获取创建人名片失败:', err);
       }
     }
 
@@ -953,9 +955,9 @@ class FeishuBitable {
         this.tenantTokenExpireTime = Date.now() + ((json.expire || 7200) - 600) * 1000;
         return this.tenantAccessToken;
       }
-      console.warn('[FeishuBitable.getTenantAccessToken] 获取失败:', json.code, json.msg);
+      console.warn('[FeishuService.getTenantAccessToken] 获取失败:', json.code, json.msg);
     } catch (err) {
-      console.warn('[FeishuBitable.getTenantAccessToken] 异常:', err);
+      console.warn('[FeishuService.getTenantAccessToken] 异常:', err);
     }
     return null;
   }
@@ -1001,7 +1003,7 @@ class FeishuBitable {
         const json = parseFeishuJson(rawText);
         if (!json) {
           console.warn(
-            `[FeishuBitable.getUserProfilesOneByOne] ${idType}(${uid}) 响应非合法JSON (status=${res.status}, content-type=${res.headers.get('content-type')}):`,
+            `[FeishuService.getUserProfilesOneByOne] ${idType}(${uid}) 响应非合法JSON (status=${res.status}, content-type=${res.headers.get('content-type')}):`,
             rawText.slice(0, 200),
           );
           continue;
@@ -1069,11 +1071,11 @@ class FeishuBitable {
             const isRoute404 = res.status === 404 && /404 page not found/i.test(rawText);
             if (isRoute404) {
               batchRouteNotFound = true;
-              console.warn('[FeishuBitable.getUserNamesBatch] 批量用户接口返回 404（应用未开通 contact 批量权限或路由不存在），后续将直接跳过批量接口');
+              console.warn('[FeishuService.getUserNamesBatch] 批量用户接口返回 404（应用未开通 contact 批量权限或路由不存在），后续将直接跳过批量接口');
               return null;
             }
             console.warn(
-              `[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) 响应非合法JSON (status=${res.status}):`,
+              `[FeishuService.getUserNamesBatch] ${endpoint}(${idType})(${label}) 响应非合法JSON (status=${res.status}):`,
               rawText.slice(0, 200),
             );
             return null;
@@ -1082,10 +1084,10 @@ class FeishuBitable {
           const users = (json.data?.users ?? json.data?.items) as Record<string, unknown>[] | undefined;
           if (json.code === 0 && users) {
             if (!isFull) {
-              console.log(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) 响应:`, JSON.stringify({ code: json.code, msg: json.msg, itemCount: users?.length }));
+              console.log(`[FeishuService.getUserNamesBatch] ${endpoint}(${idType})(${label}) 响应:`, JSON.stringify({ code: json.code, msg: json.msg, itemCount: users?.length }));
             } else {
               const withAvatar = users.filter((u) => (u as Record<string, unknown>)?.avatar).length;
-              console.log(`[FeishuBitable.getUserNamesBatch] 完整batch(${label}) 成功: 共${users.length}人, 含头像${withAvatar}人`);
+              console.log(`[FeishuService.getUserNamesBatch] 完整batch(${label}) 成功: 共${users.length}人, 含头像${withAvatar}人`);
             }
             for (const user of users) {
               const entry = this.extractUserProfile(user as Record<string, unknown>, idType);
@@ -1096,14 +1098,14 @@ class FeishuBitable {
             if (json.code === 99991679 || json.code === 99991672) {
               if (label === 'user') userTokenUnauthorized = true;
               if (isFull) batchFullUnauthorized = true;
-              console.warn(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${label}) 缺少授权 (code=${json.code})，将回退 basic_batch/tenant_token`);
+              console.warn(`[FeishuService.getUserNamesBatch] ${endpoint}(${label}) 缺少授权 (code=${json.code})，将回退 basic_batch/tenant_token`);
             } else {
-              console.warn(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) API返回非0:`, json.code, json.msg);
+              console.warn(`[FeishuService.getUserNamesBatch] ${endpoint}(${idType})(${label}) API返回非0:`, json.code, json.msg);
             }
             return null;
           }
         } catch (err) {
-          console.warn(`[FeishuBitable.getUserNamesBatch] ${endpoint}(${idType})(${label}) 失败:`, err);
+          console.warn(`[FeishuService.getUserNamesBatch] ${endpoint}(${idType})(${label}) 失败:`, err);
           return null;
         }
       }
@@ -1133,14 +1135,14 @@ class FeishuBitable {
       profileMap = await batchGet(userIds, 'open_id', userToken, 'user');
       let unresolved = userIds.filter((id) => !profileMap[id]);
       if (unresolved.length > 0 && !batchRouteNotFound && !userTokenUnauthorized) {
-        console.log('[FeishuBitable.getUserNamesBatch] user_token未解析的ID (尝试union_id):', unresolved);
+        console.log('[FeishuService.getUserNamesBatch] user_token未解析的ID (尝试union_id):', unresolved);
         const unionMap = await batchGet(unresolved, 'union_id', userToken, 'user');
         Object.assign(profileMap, unionMap);
       }
 
       unresolved = userIds.filter((id) => !profileMap[id]);
       if (unresolved.length === userIds.length) {
-        console.log('[FeishuBitable.getUserNamesBatch] user_token完全未解析，回退到tenant_token');
+        console.log('[FeishuService.getUserNamesBatch] user_token完全未解析，回退到tenant_token');
       }
     }
 
@@ -1155,7 +1157,7 @@ class FeishuBitable {
           tenantMap = await batchGet(stillUnresolved, 'open_id', tt, 'tenant');
           left = stillUnresolved.filter((id) => !tenantMap[id]);
           if (left.length > 0 && !batchRouteNotFound) {
-            console.log('[FeishuBitable.getUserNamesBatch] tenant_token未解析的ID (尝试union_id):', left);
+            console.log('[FeishuService.getUserNamesBatch] tenant_token未解析的ID (尝试union_id):', left);
             const unionMap = await batchGet(left, 'union_id', tt, 'tenant');
             Object.assign(tenantMap, unionMap);
           }
@@ -1164,7 +1166,7 @@ class FeishuBitable {
         // 3. 逐条API兜底（逐条 GET 接口正常，确保能拿到用户名）
         left = stillUnresolved.filter((id) => !tenantMap[id]);
         if (left.length > 0) {
-          console.log('[FeishuBitable.getUserNamesBatch] batch失败，改用逐条API:', left);
+          console.log('[FeishuService.getUserNamesBatch] batch失败，改用逐条API:', left);
           const oneMap = await this.getUserProfilesOneByOne(left, tt, 'open_id');
           Object.assign(tenantMap, oneMap);
           const stillLeft = left.filter((id) => !tenantMap[id]);
@@ -1179,7 +1181,7 @@ class FeishuBitable {
     }
 
     if (userIds.some((id) => !profileMap[id])) {
-      console.warn('[FeishuBitable.getUserNamesBatch] 仍有ID未解析:', userIds.filter((id) => !profileMap[id]));
+      console.warn('[FeishuService.getUserNamesBatch] 仍有ID未解析:', userIds.filter((id) => !profileMap[id]));
     }
 
     return profileMap;
@@ -1239,7 +1241,7 @@ class FeishuBitable {
     fileType: string,
     userAccessToken?: string | null,
   ): Promise<void> {
-    console.log('[FeishuBitable.deleteFile] fileToken=%s type=%s', fileToken, fileType);
+    console.log('[FeishuService.deleteFile] fileToken=%s type=%s', fileToken, fileType);
 
     const res = await this.client.drive.file.delete({
       path: { file_token: fileToken },
@@ -1268,7 +1270,7 @@ class FeishuBitable {
     tableId?: string | null,
     appName?: string | null,
   ): Promise<{ buffer: Buffer; fileName: string; fileExtension: string }> {
-    console.log('[FeishuBitable.exportBitable] appToken=%s format=%s tableId=%s (records-based)',
+    console.log('[FeishuService.exportBitable] appToken=%s format=%s tableId=%s (records-based)',
       appToken, format, tableId ?? '(全部表)');
 
     // ① 收集数据表（分页）。若指定 tableId 则只保留该表。
@@ -1309,7 +1311,7 @@ class FeishuBitable {
       } while (recToken);
 
       sheets.push({ name: tbl.name, headers, rows });
-      console.log('[FeishuBitable.exportBitable] 表=%s 字段=%d 记录=%d', tbl.name, headers.length, rows.length);
+      console.log('[FeishuService.exportBitable] 表=%s 字段=%d 记录=%d', tbl.name, headers.length, rows.length);
     }
 
     // 优先用服务端向飞书取到的「真实多维表格名」（保留【】等原字符，
@@ -1321,7 +1323,7 @@ class FeishuBitable {
     } catch {
       /* 忽略，使用前端传入的 appName 兜底 */
     }
-    console.log('[FeishuBitable.exportBitable] appName(前端)=%s effectiveAppName=%s',
+    console.log('[FeishuService.exportBitable] appName(前端)=%s effectiveAppName=%s',
       appName ?? '(空)', effectiveAppName ?? '(空)');
 
     const stamp = formatStamp(new Date());
@@ -1388,10 +1390,10 @@ class FeishuBitable {
       if (res?.code === 0 && res?.data?.app?.name) {
         return String(res.data.app.name);
       }
-      console.warn('[FeishuBitable.getBitableAppName] 未返回 name:', JSON.stringify(res)?.slice(0, 200));
+      console.warn('[FeishuService.getBitableAppName] 未返回 name:', JSON.stringify(res)?.slice(0, 200));
       return null;
     } catch (err) {
-      console.warn('[FeishuBitable.getBitableAppName] 获取失败，回退前端名字:', err);
+      console.warn('[FeishuService.getBitableAppName] 获取失败，回退前端名字:', err);
       return null;
     }
   }
@@ -1411,7 +1413,7 @@ class FeishuBitable {
     content: string,
     userAccessToken?: string | null,
   ): Promise<{ messageId: string }> {
-    console.log('[FeishuBitable.sendImTextMessage] receiveIdType=%s receiveId=%s', receiveIdType, receiveId);
+    console.log('[FeishuService.sendImTextMessage] receiveIdType=%s receiveId=%s', receiveIdType, receiveId);
 
     const res = await this.client.im.message.create({
       params: { receive_id_type: receiveIdType },
@@ -1442,7 +1444,7 @@ class FeishuBitable {
     cardJson: string,
     userAccessToken?: string | null,
   ): Promise<{ messageId: string }> {
-    console.log('[FeishuBitable.sendImCardMessage] receiveIdType=%s receiveId=%s', receiveIdType, receiveId);
+    console.log('[FeishuService.sendImCardMessage] receiveIdType=%s receiveId=%s', receiveIdType, receiveId);
 
     let cardData: unknown;
     try {
@@ -1533,6 +1535,6 @@ function formatStamp(d: Date): string {
 
 // ====== 单例导出 ======
 
-export const bitableService = new FeishuBitable();
+export const feishuService = new FeishuService();
 
-export type { BitableRecord, App, FieldType };
+export type { FeishuRecord, App, FieldType };

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { Table2, ClipboardList, FileText, ChevronRight } from 'lucide-react';
-import type { App, Table, Field, FieldType, BitableRecord, ToastMessage } from '@/types';
+import type { App, Table, Field, FieldType, FeishuRecord, ToastMessage } from '@/types';
 import {
   listApps, refreshApps, invalidateAppsCache, createApp,
   listTables, createTable, deleteTable, listFields,
@@ -55,7 +55,7 @@ export default function DashboardPage() {
   const [selectedFieldId, setSelectedFieldId] = useState('');
   // 快速导航中勾选的字段集合（多选；为空时显示全部字段）
   const [selectedFieldIds, setSelectedFieldIds] = useState<Set<string>>(new Set());
-  const [allRecords, setAllRecords] = useState<BitableRecord[]>([]); // 已加载的全量记录（本地缓存，翻页零请求）
+  const [allRecords, setAllRecords] = useState<FeishuRecord[]>([]); // 已加载的全量记录（本地缓存，翻页零请求）
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [fullLoaded, setFullLoaded] = useState(false); // 全量记录是否已静默预热完成（未完时后续翻页会触发兜底加载）
   const [warming, setWarming] = useState(false);       // 是否正在后台静默预热全量记录（用于展示进度动画）
@@ -154,7 +154,7 @@ export default function DashboardPage() {
   const handleLogout = async () => {
     await apiLogout();
     invalidateAppsCache();
-    window.location.replace('/');
+    window.location.replace('');
   };
 
   const handleListApps = useCallback(() => {

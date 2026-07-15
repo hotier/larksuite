@@ -15,7 +15,7 @@
 
 import { NextResponse } from 'next/server';
 import { findWorkflowByWebhookUrl } from '@/lib/workflow-store';
-import { bitableService } from '@/services/feishu-bitable';
+import { feishuService } from '@/services/feishu';
 import { executeWorkflow } from '@/lib/workflow-engine/executor';
 import { logger } from '@/lib/logger';
 import { timingSafeEqual } from '@/lib/crypto';
@@ -76,7 +76,7 @@ export async function POST(
     }
 
     // 3. 确保用户 Token 可用（自动尝试刷新）
-    const authOk = await bitableService.ensureAuth();
+    const authOk = await feishuService.ensureAuth();
     if (!authOk) {
       return NextResponse.json(
         { code: 3, msg: '用户未授权，请先在界面完成飞书登录' },

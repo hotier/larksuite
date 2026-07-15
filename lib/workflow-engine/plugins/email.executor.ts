@@ -35,9 +35,9 @@ export const emailExecutor: NodeExecutor = async (node, ctx) => {
   }
 
   try {
-    const { bitableService } = await import('@/services/feishu-bitable');
+    const { feishuService } = await import('@/services/feishu');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = bitableService as any;
+    const svc = feishuService as any;
     if (typeof svc.sendEmail === 'function') {
       const result = await svc.sendEmail({
         to, subject: subject || '工作流通知', body: body || '',

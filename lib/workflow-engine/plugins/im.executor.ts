@@ -7,9 +7,9 @@
 import type { WorkflowNode, ExecutionStep } from '@/types';
 import type { ExecutionContext, NodeExecutor } from '../node-registry';
 
-async function getBitableService() {
-  const { bitableService } = await import('@/services/feishu-bitable');
-  return bitableService;
+async function getFeishuService() {
+  const { feishuService } = await import('@/services/feishu');
+  return feishuService;
 }
 
 function resolveStringValue(
@@ -26,7 +26,7 @@ function resolveStringValue(
 }
 
 export const imExecutor: NodeExecutor = async (node, ctx) => {
-  const bitableService = await getBitableService();
+  const feishuService = await getFeishuService();
   const cfg = node.imConfig;
   if (!cfg) {
     return { title: node.title, action: 'im_message', success: false, message: '未配置 IM 消息' };
@@ -47,7 +47,7 @@ export const imExecutor: NodeExecutor = async (node, ctx) => {
       if (!text) {
         return { title: node.title, action: 'im_message', success: false, message: '消息内容为空' };
       }
-      const result = await bitableService.sendImTextMessage(idType, receiveId, text);
+      const result = await feishuService.sendImTextMessage(idType, receiveId, text);
       return {
         title: node.title, action: 'im_message', success: true,
         message: `文本消息已发送 (${result.messageId})`,
@@ -60,7 +60,7 @@ export const imExecutor: NodeExecutor = async (node, ctx) => {
       if (!card) {
         return { title: node.title, action: 'im_message', success: false, message: '卡片内容为空' };
       }
-      const result = await bitableService.sendImCardMessage(idType, receiveId, card);
+      const result = await feishuService.sendImCardMessage(idType, receiveId, card);
       return {
         title: node.title, action: 'im_message', success: true,
         message: `卡片消息已发送 (${result.messageId})`,

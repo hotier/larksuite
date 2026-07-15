@@ -42,7 +42,7 @@ export function parseWebhookBody(body: unknown): Record<string, unknown> {
   return sanitizeAgainstPrototypePollution(body as Record<string, unknown>);
 }
 
-// ====== /api/bitable 入参校验 ======
+// ====== /api/feishu 入参校验 ======
 // 用 zod 取代原先散落在路由各 case 中的 `if (!xxx) throw new Error` 粗校验，
 // 让「参数错误」以清晰的 400 返回，而不是被 catch 兜底成 500。
 
@@ -56,7 +56,7 @@ const requiredFields = z
   .refine((v) => v !== undefined && v !== null, { error: '缺少参数: fields' });
 
 /** 每个 action 对应的字段 schema（仅约束必填项，其余字段 passthrough 透传） */
-export const bitableActionSchemas: Record<string, z.ZodTypeAny> = {
+export const apiActionSchemas: Record<string, z.ZodTypeAny> = {
   getOAuthUrl: z.object({}).passthrough(),
   authStatus: z.object({}).passthrough(),
   exchangeAuthCode: z.object({}).passthrough(),
@@ -79,13 +79,13 @@ export const bitableActionSchemas: Record<string, z.ZodTypeAny> = {
   delete: z.object({ appToken: requiredStr('appToken'), tableId: requiredStr('tableId'), recordId: requiredStr('recordId') }).passthrough(),
 };
 
-export const bitableActionNames = Object.keys(bitableActionSchemas);
+export const apiActionNames = Object.keys(apiActionSchemas);
 
 /**
- * 校验 /api/bitable 请求体。
+ * 校验 /api/feishu 请求体。
  * @returns 错误字符串（调用方应映射为 HTTP 400）；null 表示校验通过。
  */
-export function validateBitableBody(body: unknown): string | null {
+export function validateApiBody(body: unknown): string | null {
   if (!body || typeof body !== 'object') {
     return '请求体格式错误';
   }
@@ -94,10 +94,10 @@ export function validateBitableBody(body: unknown): string | null {
   if (action === undefined || action === null) {
     return '缺少必要参数: action';
   }
-  if (typeof action !== 'string' || !bitableActionNames.includes(action)) {
+  if (typeof action !== 'string' || !apiActionNames.includes(action)) {
     return `不支持的操作类型: ${typeof action === 'string' ? action : ''}`;
   }
-  const result = bitableActionSchemas[action].safeParse(b);
+  const result = apiActionSchemas[action].safeParse(b);
   if (!result.success) {
     return result.error.issues[0]?.message ?? '参数校验失败';
   }

@@ -1326,6 +1326,63 @@ class FeishuService {
     }
   }
 
+  /**
+   * 诊断用：直接调用 wiki API 并返回原始结构，不吞错、不读缓存。
+   * 用于排查「重新授权后知识库文件不出现」问题。
+   */
+  async wikiStatus(userAccessToken?: string | null): Promise<Record<string, unknown>> {
+    const authed = this.isUserAuthenticated();
+    const tokenType = authed ? 'user_access_token' : 'tenant_access_token(fallback)';
+    const out: Record<string, unknown> = { authed, tokenType };
+    try {
+      // 1) 知识空间列表
+      const spRes: any = await this.client.wiki.space.list(
+        { params: { page_size: 50 } },
+        this.sdkOptions(userAccessToken),
+      );
+      out.spaceList = {
+        code: spRes.code,
+        msg: spRes.msg,
+        itemCount: spRes.data?.items?.length ?? 0,
+        items: (spRes.data?.items || []).map((it: any) => ({
+          space_id: it.space_id,
+          name: it.name,
+          space_type: it.space_type,
+        })),
+      };
+      // 2) 每个空间根节点
+      const spaces = spRes.data?.items || [];
+      const spaceDetails: any[] = [];
+      for (const sp of spaces) {
+        const ndRes: any = await this.client.wiki.spaceNode.list(
+          { path: { space_id: sp.space_id }, params: { page_size: 50 } },
+          this.sdkOptions(userAccessToken),
+        );
+        const items = ndRes.data?.items || [];
+        const byType: Record<string, number> = {};
+        for (const raw of items) {
+          const n = raw?.node ?? raw;
+          byType[n.obj_type || 'unknown'] = (byType[n.obj_type || 'unknown'] || 0) + 1;
+        }
+        spaceDetails.push({
+          space_id: sp.space_id,
+          name: sp.name,
+          code: ndRes.code,
+          msg: ndRes.msg,
+          rootNodeCount: items.length,
+          byObjType: byType,
+        });
+      }
+      out.spaceDetails = spaceDetails;
+      out.totalNodes = spaceDetails.reduce((s, d) => s + d.rootNodeCount, 0);
+    } catch (err: any) {
+      out.error = err?.message || String(err);
+      out.feishuCode = err?.code ?? err?.response?.data?.code;
+      out.feishuMsg = err?.msg ?? err?.response?.data?.msg;
+    }
+    return out;
+  }
+
   /** 分页遍历所有知识空间 */
   private async fetchAllWikiSpaces(
     userAccessToken?: string | null,

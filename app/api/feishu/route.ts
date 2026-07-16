@@ -145,6 +145,12 @@ export async function POST(request: NextRequest) {
 
     const uaToken: string | null = null; // 统一走服务端托管 token
 
+    // 诊断：返回 wiki API 原始结构，排查知识库文件不显示问题
+    if (action === 'wikiStatus') {
+      const wikiDiag = await feishuService.wikiStatus(uaToken);
+      return okResponse(wikiDiag);
+    }
+
     let result;
 
     switch (action) {

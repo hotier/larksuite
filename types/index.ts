@@ -81,6 +81,9 @@ export interface UserProfile {
   description?: string;
 }
 
+/** 资源来源：云盘文件（drive）或知识库/文档库节点（wiki） */
+export type AppSource = 'drive' | 'wiki';
+
 /** 多维表格应用（也用作通用云文件展示） */
 export interface App {
   app_token: string;
@@ -93,6 +96,14 @@ export interface App {
   creator_name?: string;
   creator_profile?: UserProfile;
   owner_id: string;
+  /** 来源：云盘文件或知识库节点（扁平合并两种来源时区分） */
+  source?: AppSource;
+  /** 知识库相关字段（source==='wiki' 时有效） */
+  space_id?: string;
+  space_name?: string;
+  space_type?: string;
+  obj_type?: string;
+  node_token?: string;
 }
 
 // ====== API 请求/响应类型 ======

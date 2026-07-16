@@ -311,9 +311,19 @@ export default function AppGrid({
                   </div>
 
                   {/* 标题 */}
-                  <h3 className="font-bold text-neutral-800 text-base mb-2 truncate group-hover:text-amber-600 transition-colors">
-                    {app.name}
-                  </h3>
+                  <div className="flex items-center gap-2 mb-2">
+                    <h3 className="font-bold text-neutral-800 text-base truncate group-hover:text-amber-600 transition-colors">
+                      {app.name}
+                    </h3>
+                    {app.source === 'wiki' && (
+                      <span
+                        className="text-[10px] leading-none px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100 whitespace-nowrap flex-shrink-0"
+                        title={`来自知识库${app.space_name ? `：${app.space_name}` : ''}`}
+                      >
+                        文档库
+                      </span>
+                    )}
+                  </div>
 
                   {/* URL */}
                   {app.url && (

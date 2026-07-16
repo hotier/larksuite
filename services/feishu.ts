@@ -68,6 +68,20 @@ function throwFeishuError(prefix: string, code: number | undefined, msg: string 
   throw err;
 }
 
+// ====== 知识库节点（归一化结构，供 listWikiNodes 复用） ======
+interface WikiNode {
+  space_id: string;
+  space_name: string;
+  space_type: string;
+  node_token: string;
+  obj_token: string;
+  obj_type: string;
+  title: string;
+  url: string;
+  create_time: string;
+  update_time: string;
+}
+
 // ====== 服务类 ======
 
 class FeishuService {
@@ -342,7 +356,7 @@ class FeishuService {
       redirect_uri: uri,
       response_type: 'code',
       scope:
-        'bitable:app bitable:app:readonly drive:drive drive:file drive:export:readonly docx:document docx:document:readonly docs:document:export sheets:spreadsheet sheets:spreadsheet:readonly contact:contact.base:readonly space:document:delete offline_access',
+        'bitable:app bitable:app:readonly drive:drive drive:file drive:export:readonly docx:document docx:document:readonly docs:document:export sheets:spreadsheet sheets:spreadsheet:readonly contact:contact.base:readonly space:document:delete wiki:wiki offline_access',
       state: state || '',
     });
     return `https://open.feishu.cn/open-apis/authen/v1/authorize?${params.toString()}`;
@@ -936,6 +950,7 @@ class FeishuService {
       owner_id: (file as any).owner_id || '',
       // 飞书 drive.file.list API 不返回 creator_id，用 owner_id 作为兜底
       creator_id: (file as any).creator_id || (file as any).owner_id || '',
+      source: 'drive' as const,
     }));
 
     // 批量获取创建人名片
@@ -1234,34 +1249,175 @@ class FeishuService {
     }
   }
 
-  /** 列出所有多维表格（委托给 listDriveFiles） */
+  /**
+   * 列出所有多维表格：云盘结果 + 知识库（文档库）中 obj_type=bitable 的节点。
+   * 仅根列表（folderToken/pageToken 均为空）聚合知识库，文件夹下钻保持纯云盘。
+   */
   async listApps(
     pageSize = 100,
     pageToken = '',
     folderToken = '',
     userAccessToken?: string | null,
   ): Promise<{ files: App[]; has_more: boolean; page_token: string }> {
-    return this.listDriveFiles('bitable', pageSize, pageToken, folderToken, userAccessToken);
+    const drive = await this.listDriveFiles('bitable', pageSize, pageToken, folderToken, userAccessToken);
+    if (folderToken || pageToken) return drive;
+    const wiki = (await this.listWikiNodes(userAccessToken))
+      .filter((n) => n.obj_type === 'bitable')
+      .map((n) => this.wikiNodeToApp(n));
+    return this.mergeWikiApps(drive, wiki);
   }
 
-  /** 列出所有云文档 */
+  /** 列出所有云文档：云盘 docx + 知识库 doc/docx 节点 */
   async listDocs(
     pageSize = 100,
     pageToken = '',
     folderToken = '',
     userAccessToken?: string | null,
   ): Promise<{ files: App[]; has_more: boolean; page_token: string }> {
-    return this.listDriveFiles('docx', pageSize, pageToken, folderToken, userAccessToken);
+    const drive = await this.listDriveFiles('docx', pageSize, pageToken, folderToken, userAccessToken);
+    if (folderToken || pageToken) return drive;
+    const wiki = (await this.listWikiNodes(userAccessToken))
+      .filter((n) => n.obj_type === 'doc' || n.obj_type === 'docx')
+      .map((n) => this.wikiNodeToApp(n));
+    return this.mergeWikiApps(drive, wiki);
   }
 
-  /** 列出所有在线表格 */
+  /** 列出所有在线表格：云盘 sheet + 知识库 sheet 节点 */
   async listSheets(
     pageSize = 100,
     pageToken = '',
     folderToken = '',
     userAccessToken?: string | null,
   ): Promise<{ files: App[]; has_more: boolean; page_token: string }> {
-    return this.listDriveFiles('sheet', pageSize, pageToken, folderToken, userAccessToken);
+    const drive = await this.listDriveFiles('sheet', pageSize, pageToken, folderToken, userAccessToken);
+    if (folderToken || pageToken) return drive;
+    const wiki = (await this.listWikiNodes(userAccessToken))
+      .filter((n) => n.obj_type === 'sheet')
+      .map((n) => this.wikiNodeToApp(n));
+    return this.mergeWikiApps(drive, wiki);
+  }
+
+  // ====== Wiki / 知识库（文档库） ======
+
+  /** 归一化后的知识库节点 */
+  private wikiNodesCache: { ts: number; data: WikiNode[] } | null = null;
+  private readonly WIKI_CACHE_TTL = 60 * 1000;
+
+  /**
+   * 列出当前用户有权限的全部知识库（文档库）节点（扁平化，递归下钻所有层级）。
+   * 遍历 space.list → 各 space 的 spaceNode.list（BFS 下钻 has_child）。
+   * 任何失败（如未授权 wiki:wiki）都降级为返回空数组，绝不阻塞云盘主列表。
+   */
+  async listWikiNodes(userAccessToken?: string | null): Promise<WikiNode[]> {
+    if (this.wikiNodesCache && Date.now() - this.wikiNodesCache.ts < this.WIKI_CACHE_TTL) {
+      return this.wikiNodesCache.data;
+    }
+    try {
+      const spaces = await this.fetchAllWikiSpaces(userAccessToken);
+      const nodes: WikiNode[] = [];
+      for (const sp of spaces) {
+        await this.collectWikiNodes(sp.space_id, sp.name, sp.space_type, '', userAccessToken, nodes);
+      }
+      this.wikiNodesCache = { ts: Date.now(), data: nodes };
+      return nodes;
+    } catch (err) {
+      console.warn('[FeishuService.listWikiNodes] 获取知识库失败（可能未授权 wiki:wiki 范围）：', err);
+      return [];
+    }
+  }
+
+  /** 分页遍历所有知识空间 */
+  private async fetchAllWikiSpaces(
+    userAccessToken?: string | null,
+  ): Promise<{ space_id: string; name: string; space_type: string }[]> {
+    const spaces: { space_id: string; name: string; space_type: string }[] = [];
+    let pageToken = '';
+    do {
+      const res: any = await this.client.wiki.space.list(
+        { params: { page_size: 50, page_token: pageToken } },
+        this.sdkOptions(userAccessToken),
+      );
+      if (res.code !== 0) throwFeishuError('列出知识空间失败', res.code, res.msg);
+      for (const it of res.data?.items || []) {
+        spaces.push({ space_id: it.space_id, name: it.name || '', space_type: it.space_type || '' });
+      }
+      pageToken = res.data?.has_more ? (res.data?.page_token || '') : '';
+    } while (pageToken);
+    return spaces;
+  }
+
+  /** BFS 递归收集某空间下的所有节点（含层级） */
+  private async collectWikiNodes(
+    spaceId: string,
+    spaceName: string,
+    spaceType: string,
+    parentNodeToken: string,
+    userAccessToken: string | null | undefined,
+    out: WikiNode[],
+  ): Promise<void> {
+    let pageToken = '';
+    do {
+      const params: Record<string, unknown> = { page_size: 50, page_token: pageToken };
+      if (parentNodeToken) params.parent_node_token = parentNodeToken;
+      const res: any = await this.client.wiki.spaceNode.list(
+        { path: { space_id: spaceId }, params },
+        this.sdkOptions(userAccessToken),
+      );
+      if (res.code !== 0) throwFeishuError('列出知识节点失败', res.code, res.msg);
+      for (const raw of res.data?.items || []) {
+        // 不同 SDK 版本：items 可能直接是节点，或包在 { node } 里
+        const n = raw?.node ?? raw;
+        out.push({
+          space_id: spaceId,
+          space_name: spaceName,
+          space_type: spaceType,
+          node_token: n.node_token || '',
+          obj_token: n.obj_token || '',
+          obj_type: n.obj_type || '',
+          title: n.title || '',
+          url: n.url || '',
+          create_time: n.create_time ? new Date(Number(n.create_time) * 1000).toISOString() : '',
+          update_time: n.update_time ? new Date(Number(n.update_time) * 1000).toISOString() : '',
+        });
+        if (n.has_child) {
+          await this.collectWikiNodes(spaceId, spaceName, spaceType, n.node_token, userAccessToken, out);
+        }
+      }
+      pageToken = res.data?.has_more ? (res.data?.page_token || '') : '';
+    } while (pageToken);
+  }
+
+  /** 将知识库节点归一化为 App（app_token 用底层资源 token，可直接打开/读取） */
+  private wikiNodeToApp(n: WikiNode): App {
+    return {
+      app_token: n.obj_token,
+      name: n.title,
+      url: n.url,
+      folder_token: '',
+      create_time: n.create_time,
+      update_time: n.update_time,
+      creator_id: '',
+      owner_id: '',
+      source: 'wiki',
+      space_id: n.space_id,
+      space_name: n.space_name,
+      space_type: n.space_type,
+      obj_type: n.obj_type,
+      node_token: n.node_token,
+    };
+  }
+
+  /** 合并知识库节点到云盘结果，按 app_token（=obj_token）去重，云盘优先 */
+  private mergeWikiApps(
+    drive: { files: App[]; has_more: boolean; page_token: string },
+    wikiApps: App[],
+  ): { files: App[]; has_more: boolean; page_token: string } {
+    const driveTokens = new Set(drive.files.map((f) => f.app_token));
+    const merged = [...drive.files];
+    for (const w of wikiApps) {
+      if (w.app_token && !driveTokens.has(w.app_token)) merged.push(w);
+    }
+    return { files: merged, has_more: drive.has_more, page_token: drive.page_token };
   }
 
   /** 删除云文件（支持 doc/docx/sheet/bitable 等类型） */

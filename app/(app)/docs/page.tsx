@@ -258,6 +258,14 @@ export default function DocsPage() {
                     >
                       {file.name}
                     </button>
+                    {file.source === 'wiki' && (
+                      <span
+                        className="text-[10px] leading-none px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100 whitespace-nowrap"
+                        title={`来自知识库${file.space_name ? `：${file.space_name}` : ''}`}
+                      >
+                        文档库
+                      </span>
+                    )}
                   </div>
                   <div className="w-[140px] text-xs text-neutral-400 truncate flex-shrink-0">
                     {file.creator_name ? (
@@ -310,13 +318,15 @@ export default function DocsPage() {
                       : '—'}
                   </div>
                   <div className="w-[72px] flex justify-end flex-shrink-0">
-                    <button
-                      onClick={() => setDeleteTarget(file)}
-                      className="p-1.5 rounded-md text-neutral-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
-                      title="删除"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {file.source !== 'wiki' && (
+                      <button
+                        onClick={() => setDeleteTarget(file)}
+                        className="p-1.5 rounded-md text-neutral-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all"
+                        title="删除"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

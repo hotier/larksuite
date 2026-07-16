@@ -65,3 +65,22 @@ export function decrypt(token: string): Record<string, unknown> {
   const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
   return JSON.parse(decrypted.toString('utf8'));
 }
+
+/**
+ * 加密纯文本字符串（用于 Cookie token 等场景）
+ * 内部包装为 { v: string } 后调用 encrypt，返回 base64url 密文
+ */
+export function encryptString(text: string): string {
+  return encrypt({ v: text });
+}
+
+/**
+ * 解密由 encryptString 生成的密文，返回原始字符串
+ */
+export function decryptString(encrypted: string): string {
+  const obj = decrypt(encrypted);
+  if (typeof obj.v !== 'string') {
+    throw new Error('decryptString: 非法的密文格式');
+  }
+  return obj.v;
+}

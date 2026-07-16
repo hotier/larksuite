@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { feishuService } from '@/services/feishu';
 import { TOKEN_COOKIE, EXPIRE_COOKIE, SESSION_MAX_AGE } from '@/lib/auth-constants';
+import { encryptString } from '@/lib/crypto';
 import { logger } from '@/lib/logger';
 
 /**
@@ -48,7 +49,8 @@ export async function GET(request: Request) {
       maxAge: SESSION_MAX_AGE,
     };
 
-    response.cookies.set(TOKEN_COOKIE, result.accessToken, cookieOpts);
+    // Cookie 值加密存储：DevTools 中只能看到 base64url 密文，无法获取原始 access_token
+    response.cookies.set(TOKEN_COOKIE, encryptString(result.accessToken), cookieOpts);
     response.cookies.set(EXPIRE_COOKIE, String(expireMs), cookieOpts);
 
     return response;

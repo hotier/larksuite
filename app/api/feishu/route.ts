@@ -6,6 +6,7 @@ import { logger } from '@/lib/logger';
 import { validateApiBody } from '@/lib/validation';
 import { okResponse, errorResponse } from '@/lib/api-response';
 import { TOKEN_COOKIE, EXPIRE_COOKIE, SESSION_MAX_AGE } from '@/lib/auth-constants';
+import { encryptString } from '@/lib/crypto';
 
 /**
  * 认证失败负缓存：同一失效 token 在窗口内只做一次昂贵的 ensureAuth
@@ -94,10 +95,25 @@ export async function POST(request: NextRequest) {
       }
       // 真实取数能力：恢复/刷新服务端飞书 token（DB 兜底 + 主动续期 + 并发去重）
       const connected = await feishuService.ensureAuth();
-      return NextResponse.json({
+      const response = NextResponse.json({
         success: true,
         data: { authenticated: true, feishuConnected: connected },
       });
+      // authStatus 是最频繁调用的接口，在此处自动迁移旧明文 token → 加密密文
+      // 确保页面加载时即完成迁移，无需等待数据操作触发滑动续期
+      const slideOpts = {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax' as const,
+        path: '/',
+        maxAge: SESSION_MAX_AGE,
+      };
+      response.cookies.set(EXPIRE_COOKIE, String(Date.now() + SESSION_MAX_AGE * 1000), slideOpts);
+      if (accessToken) {
+        const securedToken = accessToken.startsWith('u-') ? encryptString(accessToken) : accessToken;
+        response.cookies.set(TOKEN_COOKIE, securedToken, slideOpts);
+      }
+      return response;
     }
 
     /* 登出 */
@@ -329,7 +345,10 @@ export async function POST(request: NextRequest) {
     };
     response.cookies.set(EXPIRE_COOKIE, String(Date.now() + SESSION_MAX_AGE * 1000), slideOpts);
     if (cookieToken) {
-      response.cookies.set(TOKEN_COOKIE, cookieToken, slideOpts);
+      // 自动迁移：旧会话的 token 为飞书明文（以 "u-" 开头），首次请求时自动加密升级。
+      // 此后 Cookie 中只存密文，DevTools 无法直接获取原始 access_token。
+      const securedToken = cookieToken.startsWith('u-') ? encryptString(cookieToken) : cookieToken;
+      response.cookies.set(TOKEN_COOKIE, securedToken, slideOpts);
     }
     return response;
   } catch (error) {
